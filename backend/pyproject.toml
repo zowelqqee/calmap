@@ -1,0 +1,43 @@
+[project]
+name = "calmap-backend"
+version = "0.1.0"
+description = "Backend for a budget-aware nutrition planner (RU market)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "asyncpg>=0.29",
+    "psycopg[binary]>=3.2",
+    "alembic>=1.13",
+    "pydantic-settings>=2.2",
+    "pyjwt>=2.8",
+    "bcrypt>=4.1",
+    "httpx[socks]>=0.27",
+    "orjson>=3.10",
+    "python-multipart>=0.0.9",
+    "email-validator>=2.2",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# asyncpg connections are bound to the event loop that opened them, and the engine is
+# a module-level singleton — so every test and fixture must share one loop.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

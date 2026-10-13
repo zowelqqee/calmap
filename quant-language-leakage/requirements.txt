@@ -1,0 +1,7 @@
+# Apple silicon only. Verified with Python 3.11 on macOS 26 / M1.
+# mlx-lm pulls in mlx, transformers, sentencepiece, protobuf, pyyaml, jinja2, numpy.
+mlx-lm>=0.31.3,<0.32
+
+# Everything else in this project (prompt generation, detector, statistics,
+# Wilson intervals, Fisher exact test) is stdlib-only on purpose: no numpy,
+# pandas or scipy required for the analysis step.
