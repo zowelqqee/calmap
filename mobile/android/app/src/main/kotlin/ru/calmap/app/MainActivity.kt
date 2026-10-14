@@ -1,4 +1,4 @@
-package ru.calmap.calmap_mobile
+package ru.calmap.app
 
 import io.flutter.embedding.android.FlutterActivity
 

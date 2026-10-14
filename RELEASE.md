@@ -198,8 +198,9 @@ flutter build ipa --release --dart-define-from-file=config/production.json
 
 Перед отправкой на проверку:
 
-- [ ] **[решение] Идентификаторы приложения.** Сейчас Android — `ru.calmap.calmap_mobile`,
-      iOS — `ru.calmap.calmapMobile`. После первой публикации их нельзя изменить.
+- [ ] Идентификатор приложения `ru.calmap.app` (Android и iOS). Зарегистрировать в
+      Apple Developer → Identifiers; в Google Play и RuStore он закрепляется первой
+      загрузкой сборки. После первой публикации его нельзя изменить.
 - [ ] **Оплата на iOS.** Приложение не ссылается на внешнюю оплату и не называет
       способ оплаты (правило App Store 3.1.3 о направлении к другим способам оплаты
       соблюдено). Остаётся риск по 3.1.1: Apple может потребовать In-App Purchase
