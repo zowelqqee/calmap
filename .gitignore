@@ -26,3 +26,6 @@ mobile/ios/.symlinks/
 
 # Golden test diffs
 mobile/test/failures/
+
+# Build artifacts belong in GitHub Releases, not in git
+/*.zip

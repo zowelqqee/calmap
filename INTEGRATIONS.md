@@ -1,55 +1,85 @@
 # Подключение внешних интеграций
 
-Внутреннее API и entitlement-логика уже готовы. В production нужно только выбрать
-провайдера, задать секреты и направить callback-и на backend.
+Все переменные задаются в `backend/.env` на сервере. После изменения:
+`docker compose --profile https up -d`.
 
-## 1. Биллинг
+## 1. Оплата
 
-В `.env`:
+Тарифы продаются разовыми платежами на 30 дней, без автосписаний. Тариф включается
+только по проверенному webhook-у; переход пользователя на страницу возврата ничего
+не выдаёт.
+
+### ЮKassa
 
 ```dotenv
 BILLING_PROVIDER=yookassa
-BILLING_RETURN_URL=https://app.example.ru/billing/complete
+BILLING_RETURN_URL=https://api.example.ru/billing/complete
 YOOKASSA_SHOP_ID=...
 YOOKASSA_SECRET_KEY=...
 ```
 
-Для CloudPayments:
+В личном кабинете ЮKassa → HTTP-уведомления: URL
+`https://api.example.ru/v1/billing/webhooks/yookassa`, события `payment.succeeded`
+и `payment.canceled`.
+
+Уведомления ЮKassa не подписаны, поэтому backend не доверяет телу запроса: он
+запрашивает платёж через API ЮKassa с ключами магазина и берёт статус, сумму и
+metadata из ответа API.
+
+### CloudPayments
 
 ```dotenv
 BILLING_PROVIDER=cloudpayments
+BILLING_RETURN_URL=https://api.example.ru/billing/complete
 CLOUDPAYMENTS_PUBLIC_ID=...
 CLOUDPAYMENTS_SECRET=...
 CLOUDPAYMENTS_CHECKOUT_URL=https://pay.example.ru/checkout
 ```
 
-Клиентский flow:
+`CLOUDPAYMENTS_CHECKOUT_URL` — ваша страница с виджетом CloudPayments. Backend
+открывает её с параметрами `invoice_id`, `account_id`, `tier`, `amount`, `public_id`;
+страница должна передать `invoice_id` в виджет как `invoiceId`, а `account_id` — как
+`accountId`. Уведомление Pay: `https://api.example.ru/v1/billing/webhooks/cloudpayments`.
+Подпись `Content-HMAC` проверяется; ответ — `{"code": 0}`.
 
-1. `POST /v1/billing/checkout` с `{ "tier": "base" }` или `{ "tier": "pro" }`.
-2. Открыть `checkout_url` во внешнем браузере/webview.
-3. Provider webhook направить на
-   `POST /v1/billing/webhooks/yookassa` или
-   `POST /v1/billing/webhooks/cloudpayments`.
-4. После webhook читать `GET /v1/me/entitlements`.
+### Общие правила
 
-Webhook обрабатывается идемпотентно по `(provider, event_id)`. Для CloudPayments
-проверяется `Content-HMAC`; для YooKassa endpoint дополнительно нужно ограничить на
-ingress/firewall по официальным сетевым правилам провайдера.
+- Принимается только провайдер из `BILLING_PROVIDER`; `stub` в production отключён
+  полностью (и оформление, и webhook).
+- Сумма из уведомления сверяется с суммой платежа; провайдер — с провайдером платежа.
+- Повторное уведомление игнорируется (журнал `billing_events`).
+- Оплата до окончания срока продлевает доступ на следующие 30 дней.
 
-## 2. OAuth
+## 2. Вход через Apple, Google, VK
+
+Клиент отправляет токен провайдера в `POST /v1/auth/oauth/{apple|google|vk}`.
+Аккаунт привязывается к существующему только по email, который провайдер отметил как
+подтверждённый.
 
 ```dotenv
-APPLE_CLIENT_ID=ru.example.app
-GOOGLE_CLIENT_ID=...
-VK_USERINFO_URL=https://id.vk.com/oauth2/user_info
+APPLE_CLIENT_ID=ru.calmap.calmapMobile     # bundle ID iOS-приложения
+GOOGLE_CLIENT_ID=....apps.googleusercontent.com
+VK_CLIENT_ID=...
 ```
 
-Клиент передаёт identity token в `POST /v1/auth/oauth/{apple|google|vk}`. Apple и
-Google проверяются по подписи, issuer, audience и rotating JWKS. VK проверяется
-серверным запросом к user-info endpoint. `test:<subject>` работает только в local и
-staging.
+| Провайдер | Сервер | Сборка приложения (`config/production.json`) |
+|---|---|---|
+| Apple | `APPLE_CLIENT_ID` = bundle ID | — (кнопка видна только на iOS) |
+| Google | `GOOGLE_CLIENT_ID` = **web** client ID | `GOOGLE_SERVER_CLIENT_ID` = тот же web client ID |
+| VK | `VK_CLIENT_ID` | `VK_CLIENT_ID`, `VK_REDIRECT_URL` |
 
-## 3. Vision
+Кнопка Google или VK появляется в приложении, только если в сборке задан
+соответствующий ID.
+
+**VK: требуется проверка на устройстве.** Backend проверяет токен через VK ID
+`POST /oauth2/user_info` с `client_id`. Клиент получает токен через AppAuth; VK ID
+при обмене кода дополнительно ожидает `device_id` и `state`, которые AppAuth не
+передаёт. Перед включением VK в production проверьте вход на телефоне; при ошибке
+обмена кода клиентскую часть нужно перевести на VK ID SDK.
+
+Токены `test:<id>` работают только при `ENV=local` или `staging`.
+
+## 3. Распознавание фото
 
 Gemini:
 
@@ -58,20 +88,21 @@ VISION_PROVIDER=gemini
 GEMINI_API_KEY=...
 ```
 
-OpenAI-compatible gateway:
+OpenAI-совместимый API:
 
 ```dotenv
 VISION_PROVIDER=openai_compatible
 VISION_API_KEY=...
 VISION_BASE_URL=https://api.openai.com/v1
 VISION_MODEL=gpt-4o-mini
+OPENAI_PROXY_URL=        # необязательный прокси для запросов к провайдеру
 ```
 
-Endpoint `POST /v1/vision/recognize` принимает multipart image. Ответ всегда требует
-подтверждения; клиент отправляет исправленный набор на
-`POST /v1/vision/{recognition_id}/confirm`.
+`POST /v1/vision/recognize` — фото до 8 МБ; результат всегда подтверждает
+пользователь (`POST /v1/vision/{id}/confirm`). Ошибки провайдера пишутся в лог, а
+пользователь получает «временно недоступно».
 
-## 4. AI-консультация
+## 4. AI-консультант (тариф PRO)
 
 ```dotenv
 ASSISTANT_PROVIDER=openai_compatible
@@ -80,22 +111,31 @@ ASSISTANT_BASE_URL=https://api.openai.com/v1
 ASSISTANT_MODEL=gpt-4o-mini
 ```
 
-`POST /v1/assistant/chat` принимает `message` и опциональный
-`conversation_id`. В prompt автоматически передаются профиль, текущие цели и
-последние записи дневника. Free/base получают 402, pro — 200 сообщений в месяц.
+В запрос передаются анкета, нормы и последние записи дневника, без имени и email.
+Free/BASE получают 402, PRO — 200 сообщений в месяц.
 
-## 5. Retail offers
-
-До партнёрского API работает безопасный `curated_estimate`. Он возвращает
-расчётную стоимость из внутреннего каталога с `price_type=estimate`,
-`available=null` и подписью «Расчёт по каталогу». Эти значения нельзя показывать
-как цены или наличие конкретной сети:
+## 5. Фотографии блюд
 
 ```dotenv
-RETAIL_PROVIDER=stub
+RECIPE_IMAGE_PROVIDER=openai_compatible
+RECIPE_IMAGE_API_KEY=...
+RECIPE_IMAGE_BASE_URL=https://api.openai.com/v1
+RECIPE_IMAGE_MODEL=gpt-image-2
 ```
 
-Для внутреннего агрегатора:
+Задача запускается ежедневно в 05:00 МСК и создаёт картинку один раз на рецепт.
+Ручной запуск:
+
+```bash
+docker compose run --rm --entrypoint python backend -m app.jobs.recipe_images
+```
+
+## 6. Цены магазинов
+
+По умолчанию (`RETAIL_PROVIDER=stub`) список покупок показывает расчётную стоимость
+по каталогу с пометкой «Расчёт по каталогу», без заявлений о наличии.
+
+Собственный агрегатор:
 
 ```dotenv
 RETAIL_PROVIDER=http
@@ -104,7 +144,7 @@ RETAIL_API_KEY=...
 ```
 
 Backend отправляет `POST {RETAIL_BASE_URL}/offers` с `region_code`, `currency` и
-массивом товаров shopping list. Ожидаемый ответ:
+товарами списка покупок. Ожидаемый ответ:
 
 ```json
 {
@@ -124,16 +164,7 @@ Backend отправляет `POST {RETAIL_BASE_URL}/offers` с `region_code`, `
 }
 ```
 
-Для HTTP-провайдера backend сам выставляет `price_type=retailer`. `url`,
-`package_size_g` и `observed_at` настоятельно рекомендуется заполнять: без веса и
-момента наблюдения цену нельзя корректно сравнивать или проверять. Если `name` не
-пришёл, backend подставит русское название из shopping list.
-
-## Production checklist
-
-- выставить `ENV=production`, `DEBUG=false`, настоящий `SECRET_KEY`;
-- ограничить `CORS_ORIGINS` на уровне deployment вместо wildcard в debug;
-- добавить rate limiting/WAF перед auth, vision и webhook маршрутами;
-- проверить 152-ФЗ/согласия на обработку health data;
-- настроить TLS, резервные копии PostgreSQL и мониторинг provider errors;
-- выполнить `alembic upgrade head` и `python -m app.seed.run` перед первым запуском.
+Пятёрочка через управляемый адаптер: `RETAIL_PROVIDER=parse_bot`,
+`RETAIL_PARSE_API_KEY`, `RETAIL_PARSE_5KA_SCRAPER_ID`, `RETAIL_PARSE_5KA_STORE_ID`
+(обязателен: наличие относится к конкретному магазину). Backend не обходит CAPTCHA
+и защиту сайтов.

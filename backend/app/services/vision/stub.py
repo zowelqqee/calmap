@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 
+from app.core.config import settings
 from app.services.vision.base import CatalogHint, RawCandidate, VisionResult
 
 
@@ -19,6 +20,9 @@ class StubVisionProvider:
     async def recognize(
         self, image: bytes, mime_type: str, catalog: list[CatalogHint]
     ) -> VisionResult:
+        if settings.env == "production":
+            # Random products presented as a recognition result would mislead users.
+            raise RuntimeError("stub vision provider is disabled in production")
         if not catalog:
             return VisionResult(
                 provider=self.name, model=self.model, candidates=[], raw_response={}, latency_ms=0

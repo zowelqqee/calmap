@@ -825,3 +825,20 @@ async def test_new_weigh_in_recalculates_targets(auth_client: AsyncClient):
     overview = (await auth_client.get("/v1/progress/overview")).json()
     assert overview["current_weight_kg"] == 60
     assert overview["start_weight_kg"] != 60
+
+
+async def test_production_refuses_stub_providers(auth_client: AsyncClient, monkeypatch):
+    from app.core.config import settings
+
+    await complete_onboarding(auth_client)
+    monkeypatch.setattr(settings, "env", "production")
+    photo = await auth_client.post(
+        "/v1/vision/recognize",
+        files={"image": ("meal.jpg", b"\xff\xd8\xff-production-stub", "image/jpeg")},
+    )
+    assert photo.status_code == 503
+    assert "key" not in photo.text.lower()
+    checkout = await auth_client.post("/v1/billing/checkout", json={"tier": "pro"})
+    assert checkout.status_code == 503
+    webhook = await auth_client.post("/v1/billing/webhooks/stub", json={"object": {}})
+    assert webhook.status_code == 404
