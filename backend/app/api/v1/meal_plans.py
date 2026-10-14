@@ -157,7 +157,7 @@ async def plan_calendar(
     access: ActiveAccess,
 ) -> list[PlanCalendarDayOut]:
     if (date_to - date_from).days > 62:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "range is limited to 63 days")
+        raise HTTPException(422, "range is limited to 63 days")
     rows = (
         await session.execute(
             select(MealPlanDay, MealPlan.id, MealPlan.created_at)

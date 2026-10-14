@@ -17,12 +17,15 @@ from app.domain import allergens
 from app.domain.enums import ActivityLevel, BudgetType, DietType, Goal, Sex, WorkoutLocation
 
 
+MIN_AGE = 18
+
+
 class PersonalStep(BaseModel):
     """Step 1 — personal data."""
 
     sex: Sex
     birth_date: date | None = None
-    age: int | None = Field(default=None, ge=10, le=99)
+    age: int | None = Field(default=None, ge=MIN_AGE, le=99)
     height_cm: float = Field(ge=100, le=250)
     weight_kg: float = Field(ge=30, le=300)
 
@@ -33,8 +36,10 @@ class PersonalStep(BaseModel):
         age = self.age
         if age is None and self.birth_date is not None:
             age = int((date.today() - self.birth_date).days / 365.25)
-        if age is None or not 10 <= age <= 99:
-            raise ValueError("age must be between 10 and 99")
+        # Adults only: health data and paid subscriptions of minors would need the
+        # consent of a legal representative (152-FZ art. 9, Civil Code art. 26, 28).
+        if age is None or not MIN_AGE <= age <= 99:
+            raise ValueError(f"age must be between {MIN_AGE} and 99")
         return self
 
     def resolved_birth_date(self) -> date:

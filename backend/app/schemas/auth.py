@@ -9,6 +9,8 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=72)
+    #: The separate consent to personal data processing (152-FZ art. 9).
+    personal_data_consent: bool = False
 
     @field_validator("password")
     @classmethod
@@ -36,6 +38,8 @@ class OAuthRequest(BaseModel):
     #: Accepted for backwards compatibility and ignored: only the email verified by
     #: the provider is trusted.
     email: EmailStr | None = None
+    #: Required when this sign-in creates a new account.
+    personal_data_consent: bool = False
 
 
 class TokenPair(BaseModel):

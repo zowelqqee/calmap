@@ -2,7 +2,7 @@
 
 The texts live in `app/legal/*.md`; operator details come from settings so the same
 build serves any legal entity. A deliberately tiny Markdown subset is rendered
-(headings, paragraphs, lists, bold, links) to avoid a dependency for two pages.
+(headings, paragraphs, lists, tables, bold, links) to avoid a dependency.
 """
 
 from __future__ import annotations
@@ -21,7 +21,14 @@ router = APIRouter(prefix="/legal", tags=["legal"])
 
 LEGAL_DIR = Path(__file__).resolve().parent.parent / "legal"
 EFFECTIVE_DATE = "14.10.2026"
-PAGES = {"privacy": "privacy.md", "terms": "terms.md"}
+PAGES = {
+    "privacy": "privacy.md",
+    "terms": "terms.md",
+    "consent": "consent.md",
+    "health-consent": "health-consent.md",
+    "ai-consent": "ai-consent.md",
+    "recommendations": "recommendations.md",
+}
 
 
 def _inline(text: str) -> str:
@@ -37,6 +44,7 @@ def render_markdown(source: str) -> tuple[str, str]:
     paragraph: list[str] = []
     list_tag: str | None = None
     items: list[str] = []
+    table: list[list[str]] = []
 
     def flush_paragraph() -> None:
         if paragraph:
@@ -52,9 +60,30 @@ def render_markdown(source: str) -> tuple[str, str]:
             items.clear()
             list_tag = None
 
+    def flush_table() -> None:
+        if table:
+            head, *rows = table
+            html_rows = "".join(
+                "<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in row) + "</tr>" for row in rows
+            )
+            blocks.append(
+                "<table><thead><tr>"
+                + "".join(f"<th>{_inline(c)}</th>" for c in head)
+                + f"</tr></thead><tbody>{html_rows}</tbody></table>"
+            )
+            table.clear()
+
     for raw in source.splitlines():
         line = raw.rstrip()
         stripped = line.strip()
+        if stripped.startswith("|"):
+            flush_paragraph()
+            flush_list()
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if not all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+                table.append(cells)
+            continue
+        flush_table()
         bullet = re.match(r"^- (.*)", stripped)
         numbered = re.match(r"^\d+\. (.*)", stripped)
         if not stripped:
@@ -83,13 +112,18 @@ def render_markdown(source: str) -> tuple[str, str]:
             paragraph.append(stripped)
     flush_paragraph()
     flush_list()
+    flush_table()
     return title, "\n".join(blocks)
 
 
 @lru_cache
-def _page(name: str, operator: str, email: str) -> str:
+def _page(name: str, operator: str, email: str, ai_processor: str, ai_country: str) -> str:
     source = (LEGAL_DIR / PAGES[name]).read_text(encoding="utf-8").format(
-        operator=operator, email=email, effective_date=EFFECTIVE_DATE
+        operator=operator,
+        email=email,
+        effective_date=EFFECTIVE_DATE,
+        ai_processor=ai_processor,
+        ai_country=ai_country,
     )
     title, body = render_markdown(source)
     return f"""<!doctype html>
@@ -101,6 +135,9 @@ body{{margin:0;background:#f7f4ee;color:#1f2a24;font:16px/1.6 -apple-system,Blin
 main{{max-width:760px;margin:0 auto;padding:32px 20px 64px}}
 h1{{font-size:28px;line-height:1.25;color:#173d31}}h2{{font-size:20px;margin-top:32px;color:#173d31}}
 a{{color:#2f6b4f}}li{{margin:4px 0}}
+table{{border-collapse:collapse;width:100%;margin:12px 0;font-size:15px}}
+th,td{{border:1px solid #d9d2c3;padding:8px;text-align:left;vertical-align:top}}
+th{{background:#efe9dc}}
 </style></head><body><main>
 {body}
 </main></body></html>"""
@@ -112,5 +149,7 @@ async def legal_page(name: str) -> HTMLResponse:
         raise HTTPException(404, "page not found")
     operator = settings.legal_operator_name or "оператор сервиса Calmap"
     email = settings.legal_contact_email or "адрес, указанный в карточке приложения"
-    return HTMLResponse(_page(name, operator, email))
+    ai_processor = settings.assistant_processor_name or "провайдер AI-модели, указанный оператором"
+    ai_country = settings.assistant_processor_country or "уточняется оператором"
+    return HTMLResponse(_page(name, operator, email, ai_processor, ai_country))
 

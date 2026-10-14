@@ -12,7 +12,7 @@
 | Документ | Содержание |
 |---|---|
 | [RELEASE.md](RELEASE.md) | Пошаговый выпуск: сервер, HTTPS, сборка и публикация приложений |
-| [INTEGRATIONS.md](INTEGRATIONS.md) | API для Telegram-бота оплаты, вход через Apple/Google/VK, распознавание, AI |
+| [INTEGRATIONS.md](INTEGRATIONS.md) | API для Telegram-бота оплаты, вход через VK ID, распознавание, AI |
 | [mobile/README.md](mobile/README.md) | Сборка клиента, подпись, конфигурация |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | Стороннее содержимое (анатомическая графика) |
 
@@ -44,7 +44,7 @@ flutter run --dart-define-from-file=config/development.json
 ## Проверки
 
 ```bash
-cd backend && .venv/bin/ruff check app tests && .venv/bin/python -m pytest -q   # 105 тестов
+cd backend && .venv/bin/ruff check app tests && .venv/bin/python -m pytest -q   # 116 тестов
 cd mobile && flutter analyze && flutter test                                    # 20 тестов + 4 golden (только macOS)
 ```
 
@@ -64,7 +64,10 @@ cd mobile && flutter analyze && flutter test                                    
 | `backend/app/domain/solver/` | Оптимизатор рациона (см. ниже) |
 | `backend/app/domain/allergens.py` | Сопоставление аллергенов анкеты с кодами каталога |
 | `backend/app/domain/exercises.py` | Реестр из 233 упражнений |
-| `backend/app/services/oauth.py` | Проверка токенов Apple/Google (JWKS) и VK ID |
+| `backend/app/services/oauth.py` | Проверка токенов VK ID |
+| `backend/app/services/consent.py` | Согласия по 152-ФЗ: ПДн, данные о здоровье, передача AI |
+| `backend/app/legal/` | Тексты политики, соглашения, согласий, правил рекомендаций |
+| `docs/legal/rkn-review.md` | Юридическая проверка по требованиям РКН |
 | `backend/app/services/vision/` | Распознавание: Gemini, OpenAI-совместимый API, stub |
 | `backend/app/seed/data.py` | Курируемый каталог: 69 продуктов, 73 рецепта |
 | `backend/docker-compose.yml` | PostgreSQL, backend, Caddy (HTTPS), ежедневный бэкап |

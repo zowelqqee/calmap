@@ -105,26 +105,26 @@ TELEGRAM_LINK_CODE_TTL_MINUTES=30
 - Удаление аккаунта удаляет и привязку к Telegram, и журнал событий оплаты
   пользователя. Платёжные документы (чеки) хранит платёжный сервис бота.
 
-## 2. Вход через Apple, Google, VK
+## 2. Вход: email и VK ID
 
-Клиент отправляет токен провайдера в `POST /v1/auth/oauth/{apple|google|vk}`.
-Аккаунт привязывается к существующему только по email, который провайдер отметил как
-подтверждённый.
+Способы входа: email + пароль и VK ID. Вход через Google и Apple ID удалён: с
+1 декабря 2023 года российские сервисы вправе авторизовать пользователей только по
+российскому номеру телефона, через Госуслуги, Единую биометрическую систему или
+российскую информационную систему (149-ФЗ); с 7 июля 2026 года за нарушение
+действует штраф по ст. 13.55 КоАП. Подробнее — [docs/legal/rkn-review.md](docs/legal/rkn-review.md).
+
+Регистрация и первый вход через VK ID требуют отметки согласия на обработку
+персональных данных (`personal_data_consent: true`); согласие записывается в
+журнал `user_consents`.
 
 ```dotenv
-APPLE_CLIENT_ID=ru.calmap.calmapMobile     # bundle ID iOS-приложения
-GOOGLE_CLIENT_ID=....apps.googleusercontent.com
 VK_CLIENT_ID=...
 ```
 
-| Провайдер | Сервер | Сборка приложения (`config/production.json`) |
-|---|---|---|
-| Apple | `APPLE_CLIENT_ID` = bundle ID | — (кнопка видна только на iOS) |
-| Google | `GOOGLE_CLIENT_ID` = **web** client ID | `GOOGLE_SERVER_CLIENT_ID` = тот же web client ID |
-| VK | `VK_CLIENT_ID` | `VK_CLIENT_ID`, `VK_REDIRECT_URL` |
-
-Кнопка Google или VK появляется в приложении, только если в сборке задан
-соответствующий ID.
+Сборка приложения: `VK_CLIENT_ID`, `VK_REDIRECT_URL` в `config/production.json`.
+Кнопка VK ID появляется, только если ID задан. Клиент отправляет токен в
+`POST /v1/auth/oauth/vk`; аккаунт привязывается к существующему только по email,
+подтверждённому VK.
 
 **VK: требуется проверка на устройстве.** Backend проверяет токен через VK ID
 `POST /oauth2/user_info` с `client_id`. Клиент получает токен через AppAuth; VK ID

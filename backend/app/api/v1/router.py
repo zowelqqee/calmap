@@ -6,6 +6,7 @@ from app.api.v1 import (
     auth,
     bot,
     catalog,
+    consents,
     diary,
     exercises,
     meal_plans,
@@ -19,11 +20,12 @@ from app.api.v1 import (
 
 api_router = APIRouter(prefix="/v1")
 
-# Always available: sign-in and account management, the questionnaire, the
-# subscription status itself and the payment bot's own API.
+# Always available: sign-in and account management, consents, the questionnaire,
+# the subscription status itself and the payment bot's own API.
 api_router.include_router(auth.router)
 api_router.include_router(onboarding.router)
 api_router.include_router(subscription.router)
+api_router.include_router(consents.router)
 api_router.include_router(bot.router)
 
 # Everything else requires a paid period or the trial.

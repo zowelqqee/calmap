@@ -122,8 +122,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       final locationData = Map<String, dynamic>.from(
         payload['workout_location'] as Map? ?? const {},
       );
+      try {
+        final consents = await widget.api.getList('/v1/me/consents');
+        healthConsent = consents.any(
+          (raw) => raw is Map && raw['document'] == 'health_data',
+        );
+      } on ApiException {
+        // Unknown offline: the user ticks the box again.
+      }
       if (personal.isNotEmpty) {
-        healthConsent = true;
         sex = personal['sex']?.toString() ?? sex;
         if (personal['age'] != null) age.text = personal['age'].toString();
         if (personal['birth_date'] != null && personal['age'] == null) {
@@ -179,8 +186,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       final ageValue = _number(age);
       final heightValue = _number(height);
       final weightValue = _number(weight);
-      if (ageValue < 10 || ageValue > 99) {
-        return 'Укажите возраст от 10 до 99 лет';
+      if (ageValue < 18 || ageValue > 99) {
+        return 'Приложение доступно с 18 лет';
       }
       if (heightValue < 100 || heightValue > 250) {
         return 'Укажите рост от 100 до 250 см';
@@ -218,6 +225,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           hasChosenCity = true;
           break;
         case 1:
+          // The separate health-data consent is recorded before any body data
+          // is sent (152-FZ art. 10).
+          await widget.api.post('/v1/me/consents', {'document': 'health_data'});
           await widget.api.patch('/v1/onboarding/personal', {
             'sex': sex,
             'age': _number(age).round(),
@@ -449,14 +459,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         activeColor: olive,
         title: const Text(
           'Даю согласие на обработку данных о здоровье (пол, возраст, рост, '
-          'вес, ограничения в питании) для расчёта рациона',
+          'вес, аллергии, ограничения в питании) для расчёта рациона',
           style: TextStyle(fontSize: 14),
         ),
-      ),
-      LegalLinksText(
-        api: widget.api,
-        prefix: 'Подробнее —',
-        textAlign: TextAlign.start,
+        subtitle: GestureDetector(
+          onTap: () => openLegalPage(context, widget.api, 'health-consent'),
+          child: const Text(
+            'Текст согласия',
+            style: TextStyle(
+              color: olive,
+              decoration: TextDecoration.underline,
+            ),
+          ),
+        ),
       ),
     ],
   );

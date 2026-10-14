@@ -10,7 +10,6 @@ Flutter-клиент для API из `../backend`. Платформы: iOS и An
 | Ключ | Назначение |
 |---|---|
 | `API_BASE_URL` | адрес backend; в release — только `https://` |
-| `GOOGLE_SERVER_CLIENT_ID` | web client ID Google; пусто — кнопка Google скрыта |
 | `VK_CLIENT_ID`, `VK_REDIRECT_URL` | VK ID; пусто — кнопка VK скрыта |
 
 ```bash
@@ -76,7 +75,7 @@ release подписывается debug-ключом, который Google Pla
 | Файл | Экран |
 |---|---|
 | `intro_screen.dart` | 3 вводных экрана |
-| `auth_screen.dart` | вход и регистрация, Apple/Google/VK, ссылки на документы |
+| `auth_screen.dart` | вход и регистрация (email, VK ID), согласие на обработку ПДн |
 | `onboarding_screen.dart` | анкета из 7 шагов, согласие на обработку данных о здоровье |
 | `home_screen.dart` | нижняя навигация: Главная, Питание, Тренировки, Прогресс, Калории |
 | `dashboard_screen.dart` | сводка дня; переходы в профиль, дневник, AI-консультанта |

@@ -72,6 +72,8 @@ String humanizeApiError(int statusCode, dynamic detail) {
     'AI consultation is temporarily unavailable':
         'AI-консультант временно недоступен. Попробуйте позже',
     'unsupported provider': 'Этот способ входа недоступен',
+    'personal data consent is required':
+        'Для регистрации нужно согласие на обработку персональных данных',
   };
   for (final entry in known.entries) {
     if (text.startsWith(entry.key)) return entry.value;

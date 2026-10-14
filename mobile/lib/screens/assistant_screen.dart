@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/api_client.dart';
+import '../core/legal.dart';
 import '../core/theme.dart';
 
 class AssistantScreen extends StatefulWidget {
@@ -26,6 +27,65 @@ class _AssistantScreenState extends State<AssistantScreen> {
     super.dispose();
   }
 
+  /// Sends the question; on the first use asks for the separate consent to pass
+  /// data to the AI provider (152-FZ art. 10, 12) and retries once.
+  Future<Map<String, dynamic>> _ask(String text) async {
+    Future<Map<String, dynamic>> send() => widget.api.post(
+      '/v1/assistant/chat',
+      {'conversation_id': conversationId, 'message': text},
+    );
+    try {
+      return await send();
+    } on ApiException catch (exception) {
+      if (exception.statusCode != 409 || !await _askConsent()) rethrow;
+      await widget.api.post('/v1/me/consents', {'document': 'ai_assistant'});
+      return send();
+    }
+  }
+
+  Future<bool> _askConsent() async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Передача данных AI-консультанту'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Для ответа AI-консультанту передаются ваш вопрос, данные анкеты '
+              '(пол, вес, цель, тип питания, аллергии, бюджет), нормы и последние '
+              'записи дневника. Имя и email не передаются. Сервис может '
+              'находиться за пределами России.',
+            ),
+            const SizedBox(height: 10),
+            GestureDetector(
+              onTap: () => openLegalPage(context, widget.api, 'ai-consent'),
+              child: const Text(
+                'Текст согласия',
+                style: TextStyle(
+                  color: olive,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Согласен'),
+          ),
+        ],
+      ),
+    );
+    return accepted == true;
+  }
+
   Future<void> _send() async {
     final text = input.text.trim();
     if (text.isEmpty || sending) return;
@@ -35,10 +95,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       messages.add({'role': 'user', 'content': text});
     });
     try {
-      final response = await widget.api.post('/v1/assistant/chat', {
-        'conversation_id': conversationId,
-        'message': text,
-      });
+      final response = await _ask(text);
       conversationId = response['conversation_id'].toString();
       final answer = Map<String, dynamic>.from(response['message'] as Map);
       messages.add({
@@ -49,7 +106,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       messages.add({
         'role': 'system',
         'content': exception.statusCode == 402
-            ? 'AI-консультация доступна на тарифе Pro. Оформить его можно в профиле.'
+            ? 'AI-консультант доступен на тарифе PRO. Оформить его можно в профиле.'
             : exception.message,
       });
     } finally {

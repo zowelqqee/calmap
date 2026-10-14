@@ -180,7 +180,7 @@ async def test_relinking_a_telegram_account_moves_it(client: AsyncClient):
         registered = await client.post(
             "/v1/auth/register",
             json={"email": f"relink-{uuid.uuid4().hex[:10]}@example.com",
-                  "password": "correct-horse-battery"},
+                  "password": "correct-horse-battery", "personal_data_consent": True},
         )
         tokens.append({"Authorization": f"Bearer {registered.json()['access_token']}"})
     for headers in tokens:

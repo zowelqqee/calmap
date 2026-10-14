@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # required by 152-FZ and by the app stores; they are not invented in code.
     legal_operator_name: str = ""
     legal_contact_email: str = ""
+    #: Who processes AI-consultant requests on the operator's behalf and in which
+    #: country (named in the AI consent; a foreign country means cross-border transfer).
+    assistant_processor_name: str = ""
+    assistant_processor_country: str = ""
 
     # /docs and /openapi.json are disabled in production unless explicitly enabled.
     expose_docs: bool = False
@@ -29,8 +33,6 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = 30
     refresh_token_ttl_days: int = 60
 
-    apple_client_id: str = ""
-    google_client_id: str = ""
     vk_client_id: str = ""
 
     vision_provider: Literal["stub", "gemini", "openai_compatible"] = "stub"
@@ -73,10 +75,7 @@ class Settings(BaseSettings):
     telegram_bot_api_secret: str = ""
     telegram_link_code_ttl_minutes: int = 30
 
-    # OAuth verification. Apple and Google use their public JWKS; VK is verified via
-    # the configured user-info endpoint because VK ID access tokens are not uniform
-    # JWTs across app configurations.
-    oauth_jwks_cache_seconds: int = 3600
+    # VK ID sign-in: tokens are verified by the user-info endpoint with our client_id.
     vk_userinfo_url: str = "https://id.vk.com/oauth2/user_info"
 
     # Optional retailer aggregator. `stub` returns a clearly labelled catalogue

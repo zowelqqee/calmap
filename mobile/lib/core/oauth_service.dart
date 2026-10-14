@@ -1,12 +1,9 @@
 import 'package:flutter_appauth/flutter_appauth.dart';
-import 'package:google_sign_in/google_sign_in.dart';
-import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 
 class OAuthCredential {
-  const OAuthCredential({required this.token, this.email});
+  const OAuthCredential({required this.token});
 
   final String token;
-  final String? email;
 }
 
 /// The build was made without the provider's client ID.
@@ -16,10 +13,11 @@ class OAuthNotConfigured implements Exception {
   final String provider;
 }
 
+/// External sign-in. Only VK ID is offered: since 1 December 2023 Russian
+/// services may authorise users only by a Russian phone number, Gosuslugi, the
+/// Unified Biometric System or a Russian-owned system (149-FZ), and sign-in via
+/// Google or Apple ID is fined under article 13.55 of the Administrative Code.
 class OAuthService {
-  static const googleServerClientId = String.fromEnvironment(
-    'GOOGLE_SERVER_CLIENT_ID',
-  );
   static const vkClientId = String.fromEnvironment('VK_CLIENT_ID');
   static const vkRedirectUrl = String.fromEnvironment(
     'VK_REDIRECT_URL',
@@ -27,45 +25,6 @@ class OAuthService {
   );
 
   final FlutterAppAuth _appAuth = const FlutterAppAuth();
-  final GoogleSignIn _google = GoogleSignIn.instance;
-  bool _googleInitialized = false;
-
-  Future<OAuthCredential> google() async {
-    if (googleServerClientId.isEmpty) {
-      throw const OAuthNotConfigured('google');
-    }
-    if (!_googleInitialized) {
-      await _google.initialize(serverClientId: googleServerClientId);
-      _googleInitialized = true;
-    }
-    if (!_google.supportsAuthenticate()) {
-      throw StateError(
-        'Интерактивный вход Google не поддерживается на этом устройстве',
-      );
-    }
-    final account = await _google.authenticate(scopeHint: const ['email']);
-    final authentication = account.authentication;
-    if (authentication.idToken == null) {
-      throw StateError('Google не вернул id_token');
-    }
-    return OAuthCredential(
-      token: authentication.idToken!,
-      email: account.email,
-    );
-  }
-
-  Future<OAuthCredential> apple() async {
-    final credential = await SignInWithApple.getAppleIDCredential(
-      scopes: [AppleIDAuthorizationScopes.email],
-    );
-    if (credential.identityToken == null) {
-      throw StateError('Apple не вернул identity token');
-    }
-    return OAuthCredential(
-      token: credential.identityToken!,
-      email: credential.email,
-    );
-  }
 
   Future<OAuthCredential> vk() async {
     if (vkClientId.isEmpty || vkRedirectUrl.isEmpty) {

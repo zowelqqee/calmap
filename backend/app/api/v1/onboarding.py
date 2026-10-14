@@ -26,6 +26,7 @@ from app.schemas.onboarding import (
     TargetsOut,
     WorkoutLocationStep,
 )
+from app.services.consent import require_consent
 from app.services.planning import generate_meal_plan, store_targets, targets_for_profile
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
@@ -82,6 +83,9 @@ async def get_session(user: CurrentUser, session: DbSession) -> OnboardingSessio
 async def step_personal(
     payload: PersonalStep, user: CurrentUser, session: DbSession
 ) -> OnboardingSessionOut:
+    # Body metrics and diet restrictions are health data (152-FZ art. 10): nothing
+    # is stored before the separate consent is on record.
+    await require_consent(session, user.id, "health_data")
     return await _save_step(session, user, 1, payload.model_dump(mode="json"))
 
 

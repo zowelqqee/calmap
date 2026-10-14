@@ -1,8 +1,5 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:google_sign_in/google_sign_in.dart';
-import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 
 import '../core/api_client.dart';
 import '../core/legal.dart';
@@ -31,6 +28,7 @@ class _AuthScreenState extends State<AuthScreen> {
   late bool register = widget.initialRegister;
   bool loading = false;
   bool obscurePassword = true;
+  bool personalDataConsent = false;
   String? error;
   final oauth = OAuthService();
 
@@ -51,15 +49,23 @@ class _AuthScreenState extends State<AuthScreen> {
       setState(() => error = 'Пароль — не короче 8 символов');
       return;
     }
+    if (register && !personalDataConsent) {
+      setState(
+        () => error = 'Для регистрации нужно согласие на обработку данных',
+      );
+      return;
+    }
     setState(() {
       loading = true;
       error = null;
     });
     try {
-      final tokens = await widget.api.post(
-        register ? '/v1/auth/register' : '/v1/auth/login',
-        {'email': emailText, 'password': password.text},
-      );
+      final tokens = await widget.api
+          .post(register ? '/v1/auth/register' : '/v1/auth/login', {
+            'email': emailText,
+            'password': password.text,
+            if (register) 'personal_data_consent': true,
+          });
       await widget.api.saveTokens(tokens);
       await widget.onAuthenticated();
     } on ApiException catch (exception) {
@@ -75,28 +81,24 @@ class _AuthScreenState extends State<AuthScreen> {
       error = null;
     });
     try {
-      final credential = switch (provider) {
-        'apple' => await oauth.apple(),
-        'google' => await oauth.google(),
-        _ => await oauth.vk(),
-      };
+      final credential = await oauth.vk();
       final tokens = await widget.api.post('/v1/auth/oauth/$provider', {
         'id_token': credential.token,
+        // A first VK sign-in creates the account, which needs the consent.
+        'personal_data_consent': personalDataConsent,
       });
       await widget.api.saveTokens(tokens);
       await widget.onAuthenticated();
     } on ApiException catch (exception) {
-      if (mounted) setState(() => error = exception.message);
+      if (mounted) {
+        setState(() {
+          error = exception.message;
+          // New VK account without consent: show the consent checkbox.
+          if (exception.statusCode == 422) register = true;
+        });
+      }
     } on OAuthNotConfigured {
       if (mounted) setState(() => error = 'Этот способ входа пока недоступен');
-    } on SignInWithAppleAuthorizationException catch (exception) {
-      if (mounted && exception.code != AuthorizationErrorCode.canceled) {
-        setState(() => error = 'Не удалось войти через Apple');
-      }
-    } on GoogleSignInException catch (exception) {
-      if (mounted && exception.code != GoogleSignInExceptionCode.canceled) {
-        setState(() => error = 'Не удалось войти через Google');
-      }
     } on PlatformException catch (exception) {
       // flutter_appauth reports a closed browser as a platform error.
       final cancelled =
@@ -186,6 +188,34 @@ class _AuthScreenState extends State<AuthScreen> {
                 ),
               ),
             ),
+            if (register) ...[
+              const SizedBox(height: 10),
+              // 152-FZ art. 9: consent is a separate act, not part of the terms.
+              CheckboxListTile(
+                value: personalDataConsent,
+                onChanged: loading
+                    ? null
+                    : (value) =>
+                          setState(() => personalDataConsent = value ?? false),
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                activeColor: olive,
+                title: const Text(
+                  'Даю согласие на обработку моих персональных данных',
+                  style: TextStyle(fontSize: 14),
+                ),
+                subtitle: GestureDetector(
+                  onTap: () => openLegalPage(context, widget.api, 'consent'),
+                  child: const Text(
+                    'Текст согласия',
+                    style: TextStyle(
+                      color: olive,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
+              ),
+            ],
             if (error != null) ...[
               const SizedBox(height: 12),
               Text(error!, style: const TextStyle(color: Colors.redAccent)),
@@ -243,15 +273,9 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 }
 
-/// Sign-in buttons for the providers this build is configured for. Apple is
-/// offered on Apple platforms only; on Android it would need a separate web flow.
+/// External sign-in buttons this build is configured for (Russian services only).
 Map<String, String> get _oauthProviders => {
-  if (!kIsWeb &&
-      (defaultTargetPlatform == TargetPlatform.iOS ||
-          defaultTargetPlatform == TargetPlatform.macOS))
-    'apple': 'Apple',
-  if (OAuthService.googleServerClientId.isNotEmpty) 'google': 'Google',
-  if (OAuthService.vkClientId.isNotEmpty) 'vk': 'VK',
+  if (OAuthService.vkClientId.isNotEmpty) 'vk': 'VK ID',
 };
 
 class _OAuthButton extends StatelessWidget {

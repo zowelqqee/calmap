@@ -42,6 +42,13 @@ def _warn_about_unfinished_configuration() -> None:
             "TELEGRAM_BOT_USERNAME / TELEGRAM_BOT_API_SECRET are not set: "
             "users cannot pay and subscription status cannot be updated"
         )
+    if settings.assistant_provider != "stub" and not (
+        settings.assistant_processor_name and settings.assistant_processor_country
+    ):
+        logger.warning(
+            "ASSISTANT_PROCESSOR_NAME / ASSISTANT_PROCESSOR_COUNTRY are not set: "
+            "the AI consent does not name who processes the data"
+        )
     if not settings.legal_operator_name or not settings.legal_contact_email:
         logger.warning(
             "LEGAL_OPERATOR_NAME / LEGAL_CONTACT_EMAIL are not set: "

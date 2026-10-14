@@ -18,6 +18,7 @@ from app.schemas.assistant import (
     AssistantMessageOut,
 )
 from app.services.assistant import SYSTEM_PROMPT, get_assistant_provider
+from app.services.consent import require_consent
 from app.services.planning import current_targets
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
@@ -81,6 +82,9 @@ async def chat(
     session: DbSession,
 ) -> AssistantChatOut:
     limit = access.limits["assistant_messages_per_month"]
+    if limit > 0:
+        # Questions, the questionnaire and the diary go to an external AI provider.
+        await require_consent(session, user.id, "ai_assistant")
     if limit <= 0:
         raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, "AI consultation requires the pro plan")
     # Serialise this user's chat turns so parallel requests cannot all pass the quota.

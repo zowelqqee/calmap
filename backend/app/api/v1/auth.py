@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import delete, select
 
 from app.api.deps import CurrentAccess, CurrentUser, DbSession
@@ -17,8 +17,9 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.db.models import OAuthIdentity, User
+from app.db.models import AccountDeletion, OAuthIdentity, User
 from app.services.oauth import OAuthVerificationError, verify_oauth_token
+from app.services.consent import record_consent
 from app.services.subscription import new_subscription
 from app.schemas.auth import (
     LoginRequest,
@@ -33,7 +34,27 @@ from app.schemas.auth import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 rate_limited = [Depends(limit_auth)]
 
-SUPPORTED_PROVIDERS = {"apple", "google", "vk"}
+DESTROYED_CATEGORIES = [
+    "учётные данные",
+    "анкета (пол, возраст, рост, вес, цели, аллергии, тип питания, бюджет)",
+    "нормы питания",
+    "рационы",
+    "дневник питания",
+    "результаты распознавания фото",
+    "тренировки",
+    "прогресс веса и замеров",
+    "сообщения AI-консультанту",
+    "статус подписки и события оплаты",
+    "привязка к Telegram",
+    "журнал согласий",
+]
+
+# Only Russian-owned sign-in: 149-FZ allows a Russian phone number, Gosuslugi,
+# the Unified Biometric System or a Russian information system; Google/Apple ID
+# sign-in is fined under art. 13.55 of the Administrative Code since 7 July 2026.
+SUPPORTED_PROVIDERS = {"vk"}
+
+CONSENT_REQUIRED = "personal data consent is required"
 
 
 def _tokens(user_id: uuid.UUID) -> TokenPair:
@@ -48,7 +69,9 @@ def _tokens(user_id: uuid.UUID) -> TokenPair:
     status_code=status.HTTP_201_CREATED,
     dependencies=rate_limited,
 )
-async def register(payload: RegisterRequest, session: DbSession) -> TokenPair:
+async def register(payload: RegisterRequest, request: Request, session: DbSession) -> TokenPair:
+    if not payload.personal_data_consent:
+        raise HTTPException(422, CONSENT_REQUIRED)
     existing = await session.scalar(select(User).where(User.email == payload.email.lower()))
     if existing is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "email already registered")
@@ -61,6 +84,7 @@ async def register(payload: RegisterRequest, session: DbSession) -> TokenPair:
     session.add(user)
     await session.flush()
     session.add(new_subscription(user.id))
+    await record_consent(session, user.id, "personal_data", request)
     await session.flush()
     return _tokens(user.id)
 
@@ -78,7 +102,9 @@ async def login(payload: LoginRequest, session: DbSession) -> TokenPair:
 
 
 @router.post("/oauth/{provider}", response_model=TokenPair, dependencies=rate_limited)
-async def oauth(provider: str, payload: OAuthRequest, session: DbSession) -> TokenPair:
+async def oauth(
+    provider: str, payload: OAuthRequest, request: Request, session: DbSession
+) -> TokenPair:
     if provider not in SUPPORTED_PROVIDERS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "unsupported provider")
 
@@ -103,10 +129,13 @@ async def oauth(provider: str, payload: OAuthRequest, session: DbSession) -> Tok
     if email:
         user = await session.scalar(select(User).where(User.email == email))
     if user is None:
+        if not payload.personal_data_consent:
+            raise HTTPException(422, CONSENT_REQUIRED)
         user = User(email=email, region_code=settings.default_region_code)
         session.add(user)
         await session.flush()
         session.add(new_subscription(user.id))
+        await record_consent(session, user.id, "personal_data", request)
 
     session.add(
         OAuthIdentity(user_id=user.id, provider=provider, subject=subject, email=email)
@@ -171,6 +200,16 @@ async def delete_me(user: CurrentUser, session: DbSession) -> Response:
     removes the profile, diary, plans, progress, recognitions, chats and payments.
     Outstanding tokens stop working because their subject no longer exists.
     """
+    # Destruction record (Roskomnadzor order No. 179): the former account id and
+    # what was destroyed, without contact data.
+    session.add(
+        AccountDeletion(
+            user_ref=user.id,
+            reason="user_request",
+            method="удаление записей из базы данных",
+            categories=DESTROYED_CATEGORIES,
+        )
+    )
     # A Core delete lets Postgres cascade; the ORM would instead try to null out
     # the loaded relationships first.
     await session.execute(delete(User).where(User.id == user.id))

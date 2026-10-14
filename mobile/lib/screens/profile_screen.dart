@@ -27,6 +27,7 @@ class _ProfileScreenState extends State<ProfileScreen>
   Map<String, dynamic>? me;
   Map<String, dynamic>? targets;
   SubscriptionStatus? subscription;
+  bool aiConsentGiven = false;
   String city = 'Москва';
   bool loading = true;
 
@@ -82,6 +83,12 @@ class _ProfileScreenState extends State<ProfileScreen>
       me = results[0];
       targets = results[1];
       subscription = SubscriptionStatus.fromJson(results[2]!);
+      final consents = await widget.api
+          .getList('/v1/me/consents')
+          .catchError((Object _) => <dynamic>[]);
+      aiConsentGiven = consents.any(
+        (raw) => raw is Map && raw['document'] == 'ai_assistant',
+      );
     } on ApiException catch (exception) {
       if (mounted) _snack(exception.message);
     } finally {
@@ -177,6 +184,36 @@ class _ProfileScreenState extends State<ProfileScreen>
     try {
       await widget.api.deleteAccount();
       await widget.onLogout();
+    } on ApiException catch (exception) {
+      if (mounted) _snack(exception.message);
+    }
+  }
+
+  Future<void> _withdrawAiConsent() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Отозвать согласие?'),
+        content: const Text(
+          'Данные больше не будут передаваться AI-консультанту. Остальные '
+          'функции продолжат работать.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Отозвать'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await widget.api.delete('/v1/me/consents/ai_assistant');
+      if (mounted) setState(() => aiConsentGiven = false);
     } on ApiException catch (exception) {
       if (mounted) _snack(exception.message);
     }
@@ -333,6 +370,27 @@ class _ProfileScreenState extends State<ProfileScreen>
                       onTap: () =>
                           openLegalPage(context, widget.api, 'privacy'),
                     ),
+                    ListTile(
+                      leading: const Icon(Icons.verified_user_outlined),
+                      title: const Text('Согласие на обработку данных'),
+                      trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+                      onTap: () =>
+                          openLegalPage(context, widget.api, 'consent'),
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.tune_outlined),
+                      title: const Text('Как подбираются рекомендации'),
+                      trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+                      onTap: () =>
+                          openLegalPage(context, widget.api, 'recommendations'),
+                    ),
+                    if (aiConsentGiven)
+                      ListTile(
+                        leading: const Icon(Icons.auto_awesome_outlined),
+                        title: const Text('Передача данных AI-консультанту'),
+                        subtitle: const Text('Согласие дано · отозвать'),
+                        onTap: _withdrawAiConsent,
+                      ),
                   ],
                 ),
               ),

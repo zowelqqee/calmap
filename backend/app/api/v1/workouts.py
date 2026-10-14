@@ -75,7 +75,7 @@ async def update_workout_preferences(
     unknown_muscles = set(payload.focus_muscles) - set(MUSCLE_GROUPS)
     if unknown_equipment or unknown_muscles:
         invalid = sorted(unknown_equipment | unknown_muscles)
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"unknown workout preferences: {invalid}")
+        raise HTTPException(422, f"unknown workout preferences: {invalid}")
     profile.workout_equipment = sorted(set(payload.equipment))
     profile.workout_focus_muscles = sorted(set(payload.focus_muscles))
     if payload.rebuild_planned:
@@ -111,7 +111,7 @@ async def workout_calendar(
     profile: CurrentProfile, session: DbSession,
 ) -> list[WorkoutCalendarDayOut]:
     if (date_to - date_from).days > 62:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "range is limited to 63 days")
+        raise HTTPException(422, "range is limited to 63 days")
     await ensure_workouts(session, user.id, profile, date_from, date_to)
     rows = (await session.scalars(
         select(Workout).where(

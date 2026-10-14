@@ -72,15 +72,18 @@ async def client() -> AsyncClient:
 
 @pytest_asyncio.fixture
 async def auth_client(client: AsyncClient) -> AsyncClient:
-    """A registered, authenticated but not-yet-onboarded user."""
+    """A registered, authenticated but not-yet-onboarded user who has given the
+    personal-data and health-data consents."""
     import uuid
 
     email = f"user-{uuid.uuid4().hex[:12]}@example.com"
     response = await client.post(
-        "/v1/auth/register", json={"email": email, "password": "correct-horse-battery"}
+        "/v1/auth/register", json={"email": email, "password": "correct-horse-battery", "personal_data_consent": True}
     )
     assert response.status_code == 201, response.text
     client.headers["Authorization"] = f"Bearer {response.json()['access_token']}"
+    consent = await client.post("/v1/me/consents", json={"document": "health_data"})
+    assert consent.status_code == 201, consent.text
     return client
 
 

@@ -5,6 +5,7 @@ re-exports exhaustive.
 """
 
 from app.db.models.assistant import AssistantConversation, AssistantMessage
+from app.db.models.consent import AccountDeletion, UserConsent
 from app.db.models.catalog import FavoriteRecipe, Product, ProductPrice, Recipe, RecipeItem
 from app.db.models.diary import DiaryEntry, VisionRecognition
 from app.db.models.plan import MealPlan, MealPlanDay, MealPlanItem
@@ -29,6 +30,7 @@ from app.db.models.wellness import ProgressEntry, Workout, WorkoutExercise
 __all__ = [
     "PAID_TIERS",
     "TIER_LIMITS",
+    "AccountDeletion",
     "AssistantConversation",
     "AssistantMessage",
     "DiaryEntry",
@@ -49,6 +51,7 @@ __all__ = [
     "TelegramLink",
     "TelegramLinkCode",
     "User",
+    "UserConsent",
     "UserProfile",
     "UserTargets",
     "VisionRecognition",

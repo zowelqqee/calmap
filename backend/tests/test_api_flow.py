@@ -40,7 +40,10 @@ async def test_health(client: AsyncClient):
     assert response.json()["database"] == "ok"
 
 
-@pytest.mark.parametrize("page", ["privacy", "terms"])
+@pytest.mark.parametrize(
+    "page",
+    ["privacy", "terms", "consent", "health-consent", "ai-consent", "recommendations"],
+)
 async def test_legal_pages_are_public_html(client: AsyncClient, page: str):
     response = await client.get(f"/legal/{page}")
     assert response.status_code == 200
@@ -50,13 +53,13 @@ async def test_legal_pages_are_public_html(client: AsyncClient, page: str):
 
 
 async def test_register_rejects_duplicate_email(client: AsyncClient):
-    payload = {"email": "dupe@example.com", "password": "correct-horse-battery"}
+    payload = {"email": "dupe@example.com", "password": "correct-horse-battery", "personal_data_consent": True}
     assert (await client.post("/v1/auth/register", json=payload)).status_code == 201
     assert (await client.post("/v1/auth/register", json=payload)).status_code == 409
 
 
 async def test_login_returns_tokens_and_rejects_wrong_password(client: AsyncClient):
-    payload = {"email": "login@example.com", "password": "correct-horse-battery"}
+    payload = {"email": "login@example.com", "password": "correct-horse-battery", "personal_data_consent": True}
     await client.post("/v1/auth/register", json=payload)
 
     good = await client.post("/v1/auth/login", json=payload)
@@ -70,7 +73,7 @@ async def test_login_returns_tokens_and_rejects_wrong_password(client: AsyncClie
 
 
 async def test_refresh_token_round_trip(client: AsyncClient):
-    payload = {"email": "refresh@example.com", "password": "correct-horse-battery"}
+    payload = {"email": "refresh@example.com", "password": "correct-horse-battery", "personal_data_consent": True}
     tokens = (await client.post("/v1/auth/register", json=payload)).json()
     refreshed = await client.post(
         "/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
@@ -80,7 +83,7 @@ async def test_refresh_token_round_trip(client: AsyncClient):
 
 
 async def test_access_token_is_not_accepted_as_refresh_token(client: AsyncClient):
-    payload = {"email": "swap-token@example.com", "password": "correct-horse-battery"}
+    payload = {"email": "swap-token@example.com", "password": "correct-horse-battery", "personal_data_consent": True}
     tokens = (await client.post("/v1/auth/register", json=payload)).json()
     response = await client.post(
         "/v1/auth/refresh", json={"refresh_token": tokens["access_token"]}
@@ -93,7 +96,7 @@ async def test_protected_endpoint_requires_a_token(client: AsyncClient):
 
 
 async def test_oauth_stub_creates_and_then_matches_an_identity(client: AsyncClient):
-    body = {"id_token": "test:abc123", "email": "vk-user@example.com"}
+    body = {"id_token": "test:abc123", "email": "vk-user@example.com", "personal_data_consent": True}
     first = await client.post("/v1/auth/oauth/vk", json=body)
     assert first.status_code == 200
     second = await client.post("/v1/auth/oauth/vk", json=body)
@@ -255,7 +258,7 @@ async def test_plan_is_scoped_to_its_owner(auth_client: AsyncClient, client: Asy
     other = AsyncClient(transport=auth_client._transport, base_url="http://test")
     registration = await other.post(
         "/v1/auth/register",
-        json={"email": "intruder@example.com", "password": "correct-horse-battery"},
+        json={"email": "intruder@example.com", "password": "correct-horse-battery", "personal_data_consent": True},
     )
     other.headers["Authorization"] = f"Bearer {registration.json()['access_token']}"
     response = await other.get(f"/v1/meal-plans/{plan_id}")
@@ -628,6 +631,7 @@ async def test_trial_cannot_use_assistant(auth_client: AsyncClient):
 async def test_pro_tier_assistant_and_retail_offers(auth_client: AsyncClient):
     result = await complete_onboarding(auth_client)
     await pay(auth_client, "pro")
+    await auth_client.post("/v1/me/consents", json={"document": "ai_assistant"})
     chat = await auth_client.post(
         "/v1/assistant/chat", json={"message": "Как распределить белок?"}
     )
@@ -671,7 +675,7 @@ async def test_malformed_token_subject_is_401_not_500(client: AsyncClient):
 async def test_oauth_ignores_client_supplied_email(client: AsyncClient):
     victim = f"victim-{date.today().isoformat()}-{id(client)}@example.com"
     registered = await client.post(
-        "/v1/auth/register", json={"email": victim, "password": "correct-horse-battery"}
+        "/v1/auth/register", json={"email": victim, "password": "correct-horse-battery", "personal_data_consent": True}
     )
     victim_token = registered.json()["access_token"]
     victim_id = (
@@ -679,7 +683,8 @@ async def test_oauth_ignores_client_supplied_email(client: AsyncClient):
     ).json()["id"]
 
     attacker = await client.post(
-        "/v1/auth/oauth/google", json={"id_token": "test:attacker", "email": victim}
+        "/v1/auth/oauth/vk",
+        json={"id_token": "test:attacker", "email": victim, "personal_data_consent": True},
     )
     assert attacker.status_code == 200
     attacker_me = await client.get(
