@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/api_client.dart';
+import '../core/subscription.dart';
 import '../core/theme.dart';
 import 'assistant_screen.dart';
 import 'diary_screen.dart';
@@ -11,8 +12,11 @@ class DashboardScreen extends StatefulWidget {
     required this.api,
     required this.onSelectTab,
     required this.onLogout,
+    this.subscription,
     super.key,
   });
+
+  final SubscriptionStatus? subscription;
 
   final ApiClient api;
   final ValueChanged<int> onSelectTab;
@@ -73,6 +77,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } finally {
       if (mounted) setState(() => loading = false);
     }
+  }
+
+  /// Warning shown during the last three days of the trial or a paid period.
+  String? get _expiryNotice {
+    final status = widget.subscription;
+    final days = status?.daysLeft;
+    if (status == null || !status.hasAccess || days == null || days > 3) {
+      return null;
+    }
+    final left = days <= 1 ? 'меньше суток' : '$days ${_daysWord(days)}';
+    return status.isTrial
+        ? 'Пробный период закончится через $left (${status.untilLabel})'
+        : 'Подписка ${status.tier?.toUpperCase() ?? ''} закончится через $left '
+              '(${status.untilLabel})';
+  }
+
+  static String _daysWord(int n) {
+    final mod100 = n % 100;
+    final mod10 = n % 10;
+    if (mod100 >= 11 && mod100 <= 14) return 'дней';
+    if (mod10 == 1) return 'день';
+    if (mod10 >= 2 && mod10 <= 4) return 'дня';
+    return 'дней';
   }
 
   String get _greeting {
@@ -197,6 +224,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           const SizedBox(height: 18),
+          if (_expiryNotice case final notice?) ...[
+            Card(
+              color: champagne.withValues(alpha: .35),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(18, 16, 12, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.schedule_rounded, color: forest),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            notice,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (widget.subscription?.paymentAvailable ?? false)
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: () => openPaymentBot(context, widget.api),
+                          child: const Text('Оплатить в Telegram'),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           if (loading)
             const Padding(
               padding: EdgeInsets.all(40),

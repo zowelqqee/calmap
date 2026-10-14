@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../core/api_client.dart';
 import '../core/city_catalog.dart';
 import '../core/legal.dart';
+import '../core/subscription.dart';
 import '../core/theme.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -26,11 +26,9 @@ class _ProfileScreenState extends State<ProfileScreen>
     with WidgetsBindingObserver {
   Map<String, dynamic>? me;
   Map<String, dynamic>? targets;
-  Map<String, dynamic>? entitlements;
+  SubscriptionStatus? subscription;
   String city = 'Москва';
   bool loading = true;
-
-  bool awaitingPayment = false;
 
   @override
   void initState() {
@@ -46,14 +44,10 @@ class _ProfileScreenState extends State<ProfileScreen>
     super.dispose();
   }
 
-  /// Returning from the external checkout: the tariff arrives via the provider
-  /// webhook, so re-read the entitlements.
+  /// Back from the payment bot: the status may have changed.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && awaitingPayment) {
-      awaitingPayment = false;
-      _load();
-    }
+    if (state == AppLifecycleState.resumed) _load();
   }
 
   Future<void> _loadCity() async {
@@ -73,7 +67,8 @@ class _ProfileScreenState extends State<ProfileScreen>
   Future<void> _load() async {
     setState(() => loading = true);
     try {
-      // Independent requests: a missing target must not hide the tariff.
+      // Independent requests: targets are unavailable without a subscription,
+      // which must not hide the account itself.
       final results = await Future.wait<Map<String, dynamic>?>([
         widget.api.get('/v1/auth/me'),
         widget.api
@@ -82,62 +77,15 @@ class _ProfileScreenState extends State<ProfileScreen>
               (value) => value,
               onError: (_) => null,
             ),
-        widget.api.get('/v1/me/entitlements'),
+        widget.api.get('/v1/me/subscription'),
       ]);
       me = results[0];
       targets = results[1];
-      entitlements = results[2];
+      subscription = SubscriptionStatus.fromJson(results[2]!);
     } on ApiException catch (exception) {
       if (mounted) _snack(exception.message);
     } finally {
       if (mounted) setState(() => loading = false);
-    }
-  }
-
-  Future<void> _upgrade() async {
-    try {
-      final plans = await widget.api.getList('/v1/billing/plans');
-      if (!mounted) return;
-      final tier = await showModalBottomSheet<String>(
-        context: context,
-        builder: (_) => Padding(
-          padding: const EdgeInsets.all(22),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text('Выберите тариф', style: TextStyle(fontSize: 26)),
-              const SizedBox(height: 6),
-              const Text(
-                'Разовая оплата на 30 дней, без автоматических списаний.',
-                style: TextStyle(color: mutedInk),
-              ),
-              const SizedBox(height: 14),
-              for (final raw in plans)
-                Card(
-                  child: ListTile(
-                    title: Text((raw as Map)['tier'].toString().toUpperCase()),
-                    subtitle: Text(_planSummary(raw)),
-                    trailing: const Icon(Icons.arrow_forward),
-                    onTap: () => Navigator.pop(context, raw['tier'].toString()),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      );
-      if (tier == null) return;
-      final checkout = await widget.api.post('/v1/billing/checkout', {
-        'tier': tier,
-      });
-      final uri = Uri.tryParse(checkout['checkout_url'].toString());
-      if (uri == null ||
-          !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
-        throw ApiException(500, 'Не удалось открыть страницу оплаты');
-      }
-      awaitingPayment = true;
-    } on ApiException catch (exception) {
-      if (mounted) _snack(exception.message);
     }
   }
 
@@ -209,7 +157,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         title: const Text('Удалить аккаунт?'),
         content: const Text(
           'Будут безвозвратно удалены профиль, рацион, дневник, тренировки, '
-          'прогресс и история оплат. Оплаченный срок тарифа не возвращается '
+          'прогресс и привязка к Telegram. Оплаченный срок подписки не возвращается '
           'автоматически. Действие нельзя отменить.',
         ),
         actions: [
@@ -234,26 +182,14 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
   }
 
-  String _planSummary(Map raw) {
-    final limits = Map<String, dynamic>.from(raw['limits'] as Map? ?? const {});
-    final parts = <String>[
-      '${raw['price_rub']} ₽ за 30 дней',
-      'фото: ${limits['vision_per_day'] ?? '—'} в день',
-      if ((limits['assistant_messages_per_month'] as num? ?? 0) > 0)
-        'AI-консультант: ${limits['assistant_messages_per_month']} сообщений',
-    ];
-    return parts.join(' · ');
-  }
-
-  String _periodLabel() {
-    final raw = entitlements?['current_period_end'];
-    final end = raw == null
-        ? null
-        : DateTime.tryParse(raw.toString())?.toLocal();
-    if (end == null) return 'Бесплатный тариф без срока';
-    final date =
-        '${end.day.toString().padLeft(2, '0')}.${end.month.toString().padLeft(2, '0')}.${end.year}';
-    return 'Действует до $date. После окончания — бесплатный тариф';
+  String _subscriptionLabel() {
+    final status = subscription;
+    if (status == null) return '';
+    if (!status.hasAccess) return status.blockedMessage;
+    final telegram = status.telegramLinked
+        ? 'Оплата привязана к Telegram.'
+        : 'Оплата проходит в Telegram-боте.';
+    return 'Действует до ${status.untilLabel}. $telegram';
   }
 
   void _snack(String message) => ScaffoldMessenger.of(
@@ -359,20 +295,23 @@ class _ProfileScreenState extends State<ProfileScreen>
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Text(
-                        'Тариф ${entitlements?['tier']?.toString().toUpperCase() ?? 'FREE'}',
+                        subscription?.title ?? 'Подписка',
                         style: const TextStyle(fontSize: 20),
                       ),
                       const SizedBox(height: 6),
-                      Text(_periodLabel()),
-                      const SizedBox(height: 14),
-                      FilledButton(
-                        onPressed: _upgrade,
-                        child: Text(
-                          entitlements?['tier'] == 'free'
-                              ? 'Выбрать тариф'
-                              : 'Продлить или сменить тариф',
+                      Text(_subscriptionLabel()),
+                      if (subscription?.paymentAvailable ?? false) ...[
+                        const SizedBox(height: 14),
+                        FilledButton.icon(
+                          onPressed: () => openPaymentBot(context, widget.api),
+                          icon: const Icon(Icons.send_rounded),
+                          label: Text(
+                            subscription?.state == 'active'
+                                ? 'Продлить в Telegram'
+                                : 'Оплатить в Telegram',
+                          ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
                 ),

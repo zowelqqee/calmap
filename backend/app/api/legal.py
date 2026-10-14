@@ -114,21 +114,3 @@ async def legal_page(name: str) -> HTMLResponse:
     email = settings.legal_contact_email or "адрес, указанный в карточке приложения"
     return HTMLResponse(_page(name, operator, email))
 
-
-pages_router = APIRouter(tags=["legal"])
-
-
-@pages_router.get("/billing/complete", response_class=HTMLResponse, include_in_schema=False)
-async def billing_complete() -> HTMLResponse:
-    """Return page after an external checkout. The tariff is granted by the provider
-    webhook, not by this redirect, so the page only sends the user back to the app."""
-    return HTMLResponse(
-        """<!doctype html><html lang="ru"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>Оплата Calmap</title>
-<style>body{margin:0;background:#f7f4ee;color:#1f2a24;font:17px/1.6 -apple-system,Roboto,sans-serif}
-main{max-width:520px;margin:0 auto;padding:64px 24px;text-align:center}h1{color:#173d31}
-a{display:inline-block;margin-top:20px;padding:14px 26px;border-radius:14px;background:#173d31;color:#fff;text-decoration:none}</style>
-</head><body><main><h1>Спасибо!</h1>
-<p>Платёж обрабатывается. Тариф включится автоматически в течение минуты после подтверждения банком.</p>
-<a href="ru.calmap.app://billing/complete">Вернуться в Calmap</a></main></body></html>"""
-    )

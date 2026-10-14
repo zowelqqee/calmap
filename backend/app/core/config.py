@@ -66,15 +66,12 @@ class Settings(BaseSettings):
     assistant_base_url: str = ""
     assistant_model: str = "gpt-4o-mini"
 
-    # Billing is provider-agnostic in the application layer. `stub` is useful for
-    # local end-to-end testing; production uses yookassa or cloudpayments.
-    billing_provider: Literal["stub", "yookassa", "cloudpayments"] = "stub"
-    billing_return_url: str = "http://localhost:3000/billing/complete"
-    yookassa_shop_id: str = ""
-    yookassa_secret_key: str = ""
-    cloudpayments_public_id: str = ""
-    cloudpayments_secret: str = ""
-    cloudpayments_checkout_url: str = ""
+    # Subscriptions. Payment happens in a Telegram bot, which pushes the status to
+    # /v1/bot/* authenticated with TELEGRAM_BOT_API_SECRET. The app reads it only.
+    trial_days: int = 3
+    telegram_bot_username: str = ""
+    telegram_bot_api_secret: str = ""
+    telegram_link_code_ttl_minutes: int = 30
 
     # OAuth verification. Apple and Google use their public JWKS; VK is verified via
     # the configured user-info endpoint because VK ID access tokens are not uniform
@@ -112,6 +109,8 @@ class Settings(BaseSettings):
                 or self.secret_key.startswith("replace-with-")
             ):
                 raise ValueError("SECRET_KEY must contain at least 32 characters in production")
+            if self.telegram_bot_api_secret and len(self.telegram_bot_api_secret) < 32:
+                raise ValueError("TELEGRAM_BOT_API_SECRET must contain at least 32 characters")
         return self
 
     @property

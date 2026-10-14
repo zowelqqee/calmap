@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select, text
 
-from app.api.deps import CurrentProfile, CurrentSubscription, CurrentUser, DbSession
+from app.api.deps import ActiveAccess, CurrentProfile, CurrentUser, DbSession
 from app.db.models import AssistantConversation, AssistantMessage, DiaryEntry
 from app.schemas.assistant import (
     AssistantChatOut,
@@ -77,10 +77,10 @@ async def chat(
     payload: AssistantChatRequest,
     user: CurrentUser,
     profile: CurrentProfile,
-    subscription: CurrentSubscription,
+    access: ActiveAccess,
     session: DbSession,
 ) -> AssistantChatOut:
-    limit = subscription.limits["assistant_messages_per_month"]
+    limit = access.limits["assistant_messages_per_month"]
     if limit <= 0:
         raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, "AI consultation requires the pro plan")
     # Serialise this user's chat turns so parallel requests cannot all pass the quota.

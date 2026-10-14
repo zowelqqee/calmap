@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import CurrentProfile, CurrentUser, DbSession, NutritionSubscription
+from app.api.deps import ActiveAccess, CurrentProfile, CurrentUser, DbSession
 from app.db.models import MealPlan, MealPlanDay, MealPlanItem, ProgressEntry, Recipe
 from app.domain.allergens import catalogue_exclusions
 from app.domain.enums import MealType
@@ -105,13 +105,13 @@ async def generate(
     user: CurrentUser,
     profile: CurrentProfile,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
 ) -> PlanOut:
     targets = await current_targets(session, user.id)
     if targets is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "compute targets first")
 
-    days = min(payload.days, subscription.limits["plan_days"])
+    days = min(payload.days, access.limits["plan_days"])
     plan = await generate_meal_plan(
         session,
         user,
@@ -129,7 +129,7 @@ async def generate(
 async def current_plan(
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
     day: date | None = None,
 ) -> PlanOut:
     requested = day or date.today()
@@ -154,7 +154,7 @@ async def plan_calendar(
     date_to: date,
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
 ) -> list[PlanCalendarDayOut]:
     if (date_to - date_from).days > 62:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "range is limited to 63 days")
@@ -192,7 +192,7 @@ async def get_plan(
     plan_id: uuid.UUID,
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
 ) -> PlanOut:
     return await _serialize(session, await _owned_plan(session, plan_id, user.id))
 
@@ -202,7 +202,7 @@ async def get_shopping_list(
     plan_id: uuid.UUID,
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
     day: date | None = None,
 ) -> ShoppingListOut:
     """Aggregated ingredients with an estimated cost.
@@ -228,7 +228,7 @@ async def get_shopping_offers(
     plan_id: uuid.UUID,
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
     day: date | None = None,
 ) -> ShoppingOffersOut:
     """Return retailer offers through a configured partner adapter.
@@ -258,7 +258,7 @@ async def swap_item(
     user: CurrentUser,
     profile: CurrentProfile,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
 ) -> PlanOut:
     """Replace one meal without touching the rest of the day.
 

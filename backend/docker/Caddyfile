@@ -3,6 +3,14 @@
 
 	# Billing webhooks and the API share one origin; Caddy obtains and renews the
 	# TLS certificate automatically.
+	# The payment bot API is reachable only from BOT_ALLOWED_IPS (space-separated
+	# addresses or CIDRs); by default from anywhere, protected by the shared secret.
+	@bot_forbidden {
+		path /v1/bot/*
+		not remote_ip {$BOT_ALLOWED_IPS:0.0.0.0/0 ::/0}
+	}
+	respond @bot_forbidden 404
+
 	reverse_proxy backend:8000
 
 	header {

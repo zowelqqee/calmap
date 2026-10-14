@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, status
 
-from app.api.deps import CurrentProfile, CurrentSubscription, CurrentUser, DbSession
-from app.db.models import TIER_PRICES_RUB
+from app.api.deps import CurrentProfile, CurrentUser, DbSession
 from app.schemas.onboarding import TargetsOut
 from app.services.planning import (
     current_targets,
@@ -52,15 +51,3 @@ async def recalculate_targets(
         water_ml=row.water_ml,
         adjustments=row.adjustments,
     )
-
-
-@router.get("/entitlements")
-async def entitlements(subscription: CurrentSubscription) -> dict:
-    return {
-        "tier": subscription.tier,
-        "status": subscription.status,
-        "provider": subscription.provider,
-        "current_period_end": subscription.current_period_end,
-        "limits": subscription.limits,
-        "prices_rub": TIER_PRICES_RUB,
-    }

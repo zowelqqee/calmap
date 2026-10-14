@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import decode_token
 from app.db.models import Subscription, User, UserProfile
 from app.db.session import get_db
-from app.services.billing.service import expire_paid_tier
+from app.services.subscription import (
+    BLOCKED_MESSAGES,
+    Access,
+    evaluate,
+    load_subscription,
+)
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -54,33 +59,31 @@ CurrentProfile = Annotated[UserProfile, Depends(get_current_profile)]
 
 
 async def get_subscription(user: CurrentUser, session: DbSession) -> Subscription:
-    """Every user has an entitlement row; free tier is created lazily on first read."""
-    subscription = await session.scalar(
-        select(Subscription).where(Subscription.user_id == user.id).limit(1)
-    )
-    if subscription is None:
-        subscription = Subscription(user_id=user.id, tier="free")
-        session.add(subscription)
-        await session.flush()
-    elif expire_paid_tier(subscription):
-        # A lapsed paid pass falls back to the free tier; it must never leave the
-        # user with less access than someone who never paid.
-        await session.flush()
-    return subscription
+    return await load_subscription(session, user)
 
 
 CurrentSubscription = Annotated[Subscription, Depends(get_subscription)]
 
 
-async def require_nutrition_access(
-    subscription: CurrentSubscription,
-) -> Subscription:
-    if subscription.status != "active":
+async def get_access(subscription: CurrentSubscription) -> Access:
+    return evaluate(subscription)
+
+
+CurrentAccess = Annotated[Access, Depends(get_access)]
+
+
+async def require_access(access: CurrentAccess) -> Access:
+    """Gate for every feature: only a paid period or the trial passes."""
+    if not access.has_access:
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,
-            "subscription is not active: renew access to nutrition plans",
+            {
+                "code": "subscription_required",
+                "state": access.state,
+                "message": BLOCKED_MESSAGES[access.state],
+            },
         )
-    return subscription
+    return access
 
 
-NutritionSubscription = Annotated[Subscription, Depends(require_nutrition_access)]
+ActiveAccess = Annotated[Access, Depends(require_access)]

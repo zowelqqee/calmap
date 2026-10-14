@@ -42,6 +42,7 @@ services:
     profiles: ["https"]
     environment:
       DOMAIN: ${DOMAIN:?set DOMAIN in .env to use the https profile}
+      BOT_ALLOWED_IPS: ${BOT_ALLOWED_IPS:-0.0.0.0/0 ::/0}
     ports:
       - "80:80"
       - "443:443"

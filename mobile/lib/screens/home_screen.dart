@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/api_client.dart';
+import '../core/subscription.dart';
 import '../core/theme.dart';
 import 'calorie_tracker_screen.dart';
 import 'dashboard_screen.dart';
@@ -9,10 +10,16 @@ import 'progress_screen.dart';
 import 'workout_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({required this.api, required this.onLogout, super.key});
+  const HomeScreen({
+    required this.api,
+    required this.onLogout,
+    this.subscription,
+    super.key,
+  });
 
   final ApiClient api;
   final Future<void> Function() onLogout;
+  final SubscriptionStatus? subscription;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -28,6 +35,7 @@ class _HomeScreenState extends State<HomeScreen> {
         api: widget.api,
         onSelectTab: (value) => setState(() => index = value),
         onLogout: widget.onLogout,
+        subscription: widget.subscription,
       ),
       PlanScreen(api: widget.api),
       WorkoutScreen(api: widget.api),

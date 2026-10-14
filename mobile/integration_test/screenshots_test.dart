@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
 import 'package:calmap_mobile/core/api_client.dart';
+import 'package:calmap_mobile/core/subscription.dart';
 import 'package:calmap_mobile/core/theme.dart';
 import 'package:calmap_mobile/screens/assistant_screen.dart';
 import 'package:calmap_mobile/screens/auth_screen.dart';
@@ -12,6 +13,7 @@ import 'package:calmap_mobile/screens/diary_screen.dart';
 import 'package:calmap_mobile/screens/home_screen.dart';
 import 'package:calmap_mobile/screens/intro_screen.dart';
 import 'package:calmap_mobile/screens/onboarding_screen.dart';
+import 'package:calmap_mobile/screens/paywall_screen.dart';
 import 'package:calmap_mobile/screens/profile_screen.dart';
 
 void main() {
@@ -135,8 +137,22 @@ void main() {
 
     await show(tester, ProfileScreen(api: api, onLogout: () async {}));
     await capture(tester, '24_profile');
-    await tester.tap(find.text('Выбрать тариф'));
-    await capture(tester, '25_subscription_plans');
+
+    await show(
+      tester,
+      PaywallScreen(
+        api: api,
+        status: SubscriptionStatus.fromJson(const {
+          'state': 'expired',
+          'has_access': false,
+          'tier': 'base',
+          'payment_available': true,
+        }),
+        onRecheck: () async => false,
+        onLogout: () async {},
+      ),
+    );
+    await capture(tester, '25_paywall');
   });
 }
 
@@ -180,11 +196,17 @@ class DemoApiClient extends ApiClient {
         'carbs_g': 276,
       };
     }
-    if (path == '/v1/me/entitlements') {
+    if (path == '/v1/me/subscription') {
       return {
+        'state': 'active',
+        'has_access': true,
         'tier': 'pro',
-        'status': 'active',
-        'limits': {'vision_per_day': 30},
+        'access_until': DateTime.now()
+            .add(const Duration(days: 20))
+            .toUtc()
+            .toIso8601String(),
+        'telegram_linked': true,
+        'payment_available': true,
       };
     }
     if (path == '/v1/progress/overview') return _progress;
@@ -246,12 +268,6 @@ class DemoApiClient extends ApiClient {
         },
       ];
     }
-    if (path == '/v1/billing/plans') {
-      return [
-        {'tier': 'base', 'price_rub': 299, 'period_days': 30},
-        {'tier': 'pro', 'price_rub': 499, 'period_days': 30},
-      ];
-    }
     return <dynamic>[];
   }
 
@@ -280,8 +296,8 @@ class DemoApiClient extends ApiClient {
       };
     }
     if (path == '/v1/onboarding/complete') return {'plan_id': 'demo-plan'};
-    if (path == '/v1/billing/checkout') {
-      return {'checkout_url': 'https://example.com'};
+    if (path == '/v1/me/subscription/telegram-link') {
+      return {'url': 'https://t.me/calmap_bot?start=demo'};
     }
     if (path.contains('/workouts/')) return _workout;
     if (path.endsWith('/favorite')) return {'is_favorite': true};

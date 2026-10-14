@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from sqlalchemy import func, select, text
 
-from app.api.deps import CurrentSubscription, CurrentUser, DbSession
+from app.api.deps import ActiveAccess, CurrentUser, DbSession
 from app.db.models import DiaryEntry, Product, VisionRecognition
 from app.schemas.tracking import (
     VisionCandidateOut,
@@ -28,7 +28,7 @@ ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/heic"}
 @router.post("/recognize", response_model=VisionRecognizeOut)
 async def recognize(
     user: CurrentUser,
-    subscription: CurrentSubscription,
+    access: ActiveAccess,
     session: DbSession,
     image: UploadFile = File(...),
 ) -> VisionRecognizeOut:
@@ -70,7 +70,7 @@ async def recognize(
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"vision:{user.id}"}
     )
-    limit = subscription.limits["vision_per_day"]
+    limit = access.limits["vision_per_day"]
     used = await session.scalar(
         select(func.count())
         .select_from(VisionRecognition)
@@ -82,7 +82,7 @@ async def recognize(
     if used is not None and used >= limit:
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,
-            f"daily photo limit reached for the '{subscription.tier}' plan ({limit}/day)",
+            f"daily photo limit reached for the '{access.tier}' plan ({limit}/day)",
         )
 
     # Keep the large external food dump out of the vision prompt. The curated

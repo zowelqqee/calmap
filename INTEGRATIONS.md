@@ -3,52 +3,107 @@
 Все переменные задаются в `backend/.env` на сервере. После изменения:
 `docker compose --profile https up -d`.
 
-## 1. Оплата
+## 1. Подписка через Telegram-бота
 
-Тарифы продаются разовыми платежами на 30 дней, без автосписаний. Тариф включается
-только по проверенному webhook-у; переход пользователя на страницу возврата ничего
-не выдаёт.
-
-### ЮKassa
+Оплата проходит в Telegram-боте. Бот — единственный источник статуса оплаты:
+он сообщает backend-у каждое изменение, а приложение только читает итог.
 
 ```dotenv
-BILLING_PROVIDER=yookassa
-BILLING_RETURN_URL=https://api.example.ru/billing/complete
-YOOKASSA_SHOP_ID=...
-YOOKASSA_SECRET_KEY=...
+TRIAL_DAYS=3
+TELEGRAM_BOT_USERNAME=calmap_pay_bot          # без @
+TELEGRAM_BOT_API_SECRET=...                   # openssl rand -hex 32
+TELEGRAM_LINK_CODE_TTL_MINUTES=30
 ```
 
-В личном кабинете ЮKassa → HTTP-уведомления: URL
-`https://api.example.ru/v1/billing/webhooks/yookassa`, события `payment.succeeded`
-и `payment.canceled`.
+### Схема
 
-Уведомления ЮKassa не подписаны, поэтому backend не доверяет телу запроса: он
-запрашивает платёж через API ЮKassa с ключами магазина и берёт статус, сумму и
-metadata из ответа API.
+1. В приложении пользователь нажимает «Оплатить в Telegram». Приложение получает
+   одноразовую ссылку `https://t.me/<бот>?start=<код>` (код живёт 30 минут, новый
+   код отменяет старый, в БД хранится только SHA-256 кода).
+2. Бот получает `/start <код>` и вызывает `POST /v1/bot/link`. Telegram-аккаунт
+   привязывается к аккаунту приложения (один к одному; повторная привязка
+   переносит связь).
+3. После оплаты бот вызывает `POST /v1/bot/subscription/events` со статусом `paid`.
+4. Приложение при возврате из Telegram перечитывает статус и открывает доступ.
 
-### CloudPayments
+### API для бота
 
-```dotenv
-BILLING_PROVIDER=cloudpayments
-BILLING_RETURN_URL=https://api.example.ru/billing/complete
-CLOUDPAYMENTS_PUBLIC_ID=...
-CLOUDPAYMENTS_SECRET=...
-CLOUDPAYMENTS_CHECKOUT_URL=https://pay.example.ru/checkout
+Все запросы — с заголовком `X-Bot-Secret: <TELEGRAM_BOT_API_SECRET>`. Без настроенного
+секрета эндпоинты отвечают 404, с неверным — 401.
+
+**`POST /v1/bot/link`** — привязка по коду из `/start`.
+
+```json
+{"code": "<код из /start>", "telegram_user_id": 123456789, "telegram_username": "ivan"}
 ```
 
-`CLOUDPAYMENTS_CHECKOUT_URL` — ваша страница с виджетом CloudPayments. Backend
-открывает её с параметрами `invoice_id`, `account_id`, `tier`, `amount`, `public_id`;
-страница должна передать `invoice_id` в виджет как `invoiceId`, а `account_id` — как
-`accountId`. Уведомление Pay: `https://api.example.ru/v1/billing/webhooks/cloudpayments`.
-Подпись `Content-HMAC` проверяется; ответ — `{"code": 0}`.
+Ответ 200: `{"user_id": "...", "subscription": {...}}`. 404 — код неизвестен,
+использован или истёк (попросите пользователя снова нажать «Оплатить» в приложении).
 
-### Общие правила
+**`POST /v1/bot/subscription/events`** — изменение статуса оплаты.
 
-- Принимается только провайдер из `BILLING_PROVIDER`; `stub` в production отключён
-  полностью (и оформление, и webhook).
-- Сумма из уведомления сверяется с суммой платежа; провайдер — с провайдером платежа.
-- Повторное уведомление игнорируется (журнал `billing_events`).
-- Оплата до окончания срока продлевает доступ на следующие 30 дней.
+```json
+{
+  "event_id": "tg-charge-6a1f...",
+  "telegram_user_id": 123456789,
+  "status": "paid",
+  "tier": "pro",
+  "paid_until": "2026-11-14T12:00:00+03:00",
+  "amount": 499,
+  "currency": "RUB",
+  "telegram_payment_charge_id": "6a1f..."
+}
+```
+
+| Поле | Правило |
+|---|---|
+| `event_id` | уникален; повтор того же события возвращает `processed: false` и ничего не меняет |
+| `status` | `paid` — доступ до `paid_until`; `revoked` — отмена/возврат, доступ закрывается сразу |
+| `tier` | `base` или `pro`; обязателен для `paid` |
+| `paid_until` | обязателен для `paid`; с часовым поясом; в будущем, не дальше 400 дней |
+| `currency` | `RUB` или `XTR` (Telegram Stars) |
+
+Последнее событие задаёт статус как есть: продление считает бот (например,
+`paid_until` = текущий `paid_until` + 30 дней). Ответ:
+`{"processed": true, "subscription": {...}}`. 404 — Telegram-аккаунт не привязан.
+
+**`GET /v1/bot/subscription/{telegram_user_id}`** — текущий статус (для команды
+«Моя подписка» в боте).
+
+**`GET /v1/bot/subscriptions/expiring?within_hours=24`** — привязанные пользователи,
+у которых доступ (оплата или пробный период) заканчивается в этом окне. Для
+напоминаний из бота.
+
+### Статус в ответах
+
+`subscription` во всех ответах совпадает с `GET /v1/me/subscription`:
+
+```json
+{
+  "state": "active",
+  "has_access": true,
+  "tier": "pro",
+  "payment_status": "paid",
+  "paid_until": "2026-11-14T09:00:00Z",
+  "trial_ends_at": "2026-10-17T09:00:00Z",
+  "access_until": "2026-11-14T09:00:00Z",
+  "days_left": 31,
+  "limits": {"vision_per_day": 30, "plan_days": 28, "assistant_messages_per_month": 200},
+  "message": null,
+  "telegram_linked": true,
+  "payment_available": true
+}
+```
+
+`state`: `trial`, `active`, `trial_ended`, `expired`, `revoked`. Без доступа
+`message` содержит текст для пользователя.
+
+### Безопасность
+
+- Укажите IP сервера бота в `BOT_ALLOWED_IPS`: Caddy отклонит `/v1/bot/*` с других адресов.
+- Секрет храните только в `.env` backend-а и бота; при утечке смените в обоих.
+- Удаление аккаунта удаляет и привязку к Telegram, и журнал событий оплаты
+  пользователя. Платёжные документы (чеки) хранит платёжный сервис бота.
 
 ## 2. Вход через Apple, Google, VK
 

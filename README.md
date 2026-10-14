@@ -6,12 +6,13 @@
 Функции: онбординг-анкета, расчёт норм КБЖУ, рацион на неделю в пределах бюджета,
 замена блюд, список покупок, дневник питания (поиск, ручной ввод, распознавание по
 фото), тренировки с картой мышц, прогресс веса и замеров, AI-консультант (PRO),
-платные тарифы BASE/PRO, удаление аккаунта, правовые документы.
+подписка BASE/PRO с оплатой в Telegram-боте и пробным периодом 3 дня, удаление
+аккаунта, правовые документы.
 
 | Документ | Содержание |
 |---|---|
 | [RELEASE.md](RELEASE.md) | Пошаговый выпуск: сервер, HTTPS, сборка и публикация приложений |
-| [INTEGRATIONS.md](INTEGRATIONS.md) | Подключение оплаты, входа через Apple/Google/VK, распознавания, AI |
+| [INTEGRATIONS.md](INTEGRATIONS.md) | API для Telegram-бота оплаты, вход через Apple/Google/VK, распознавание, AI |
 | [mobile/README.md](mobile/README.md) | Сборка клиента, подпись, конфигурация |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | Стороннее содержимое (анатомическая графика) |
 
@@ -43,8 +44,8 @@ flutter run --dart-define-from-file=config/development.json
 ## Проверки
 
 ```bash
-cd backend && .venv/bin/ruff check app tests && .venv/bin/python -m pytest -q   # 98 тестов
-cd mobile && flutter analyze && flutter test                                    # 15 тестов + 4 golden (только macOS)
+cd backend && .venv/bin/ruff check app tests && .venv/bin/python -m pytest -q   # 105 тестов
+cd mobile && flutter analyze && flutter test                                    # 20 тестов + 4 golden (только macOS)
 ```
 
 Тесты backend создают отдельную БД `calmap_test` и прогоняют те же миграции Alembic,
@@ -56,12 +57,13 @@ cd mobile && flutter analyze && flutter test                                    
 | Путь | Назначение |
 |---|---|
 | `backend/app/api/v1/` | 59 операций REST API |
-| `backend/app/api/legal.py` | Публичные страницы `/legal/privacy`, `/legal/terms`, `/billing/complete` |
+| `backend/app/api/legal.py` | Публичные страницы `/legal/privacy`, `/legal/terms` |
+| `backend/app/api/v1/bot.py` | API для Telegram-бота: привязка аккаунта, статус оплаты |
+| `backend/app/services/subscription.py` | Правила доступа: пробный период, оплата, окончание |
 | `backend/app/domain/targets.py` | BMR/TDEE/БЖУ, чистые функции |
 | `backend/app/domain/solver/` | Оптимизатор рациона (см. ниже) |
 | `backend/app/domain/allergens.py` | Сопоставление аллергенов анкеты с кодами каталога |
 | `backend/app/domain/exercises.py` | Реестр из 233 упражнений |
-| `backend/app/services/billing/` | ЮKassa, CloudPayments, stub (только вне production) |
 | `backend/app/services/oauth.py` | Проверка токенов Apple/Google (JWKS) и VK ID |
 | `backend/app/services/vision/` | Распознавание: Gemini, OpenAI-совместимый API, stub |
 | `backend/app/seed/data.py` | Курируемый каталог: 69 продуктов, 73 рецепта |
@@ -88,20 +90,34 @@ cd mobile && flutter analyze && flutter test                                    
 **Цены версионированы**, стоимость плана фиксируется в момент генерации; нутриенты
 копируются в запись дневника.
 
-**Тарифы — разовая оплата на 30 дней без автосписаний.** Тариф выдаётся только
-по проверенному webhook-у провайдера: CloudPayments — подпись HMAC, ЮKassa —
-повторный запрос платежа через API. Сумма и провайдер сверяются с платежом.
-После окончания срока аккаунт возвращается на бесплатный тариф.
+**Доступ определяется только статусом оплаты в БД.** Таблица `subscriptions`
+(одна строка на пользователя) хранит `payment_status` (`none` / `paid` / `expired` /
+`revoked`), `paid_until`, тариф и `trial_ends_at`. Записывает статус только
+Telegram-бот оплаты через `/v1/bot/*` (общий секрет). Приложение статус только
+читает (`GET /v1/me/subscription`):
 
-| Тариф | Цена | Фото в день | Дней плана | AI-консультант |
-|---|---|---|---|---|
-| FREE | 0 ₽ | 1 | 1 | — |
-| BASE | 299 ₽ / 30 дней | 5 | 7 | — |
-| PRO | 499 ₽ / 30 дней | 30 | 28 | 200 сообщений в месяц |
+| Состояние | Когда | Доступ |
+|---|---|---|
+| `trial` | первые 3 дня после регистрации, оплат не было | да, лимиты BASE |
+| `active` | `payment_status = paid` и `paid_until` в будущем | да, лимиты тарифа |
+| `trial_ended` | пробный период прошёл, оплат не было | нет |
+| `expired` | оплаченный период закончился | нет |
+| `revoked` | бот сообщил об отмене или возврате | нет |
 
-Лимиты заданы в `backend/app/db/models/billing.py`. Первый рацион после анкеты
-составляется на 7 дней на любом тарифе. Повторная отправка того же фото не списывает
-лимит.
+Без доступа сервер отвечает 402 `subscription_required` на все функции, кроме
+входа, анкеты, профиля, статуса подписки и удаления аккаунта. Приложение показывает
+экран «Подписка закончилась» (или «Пробный период закончился») с кнопкой
+«Оплатить в Telegram». За 3 дня до окончания на главном экране появляется
+предупреждение. Повторного пробного периода после оплаты нет.
+
+| Тариф | Фото в день | Дней плана | AI-консультант |
+|---|---|---|---|
+| Пробный (3 дня) | 5 | 7 | — |
+| BASE | 5 | 7 | — |
+| PRO | 30 | 28 | 200 сообщений в месяц |
+
+Цены задаются в боте. Лимиты — в `backend/app/db/models/subscription.py`.
+Повторная отправка того же фото не списывает лимит.
 
 **Даты по Москве.** «Сегодня», дневные лимиты и даты планов считаются в
 `APP_TIMEZONE` (по умолчанию `Europe/Moscow`) — и в процессе, и в сессиях PostgreSQL.

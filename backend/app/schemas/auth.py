@@ -55,7 +55,8 @@ class UserOut(BaseModel):
     avatar_url: str | None
     region_code: str
     onboarding_completed: bool
-    tier: str = "free"
+    #: trial | base | pro while access lasts, null without access
+    tier: str | None = None
 
 
 class ProfileUpdate(BaseModel):

@@ -4,7 +4,6 @@ import '../core/api_client.dart';
 import '../core/theme.dart';
 import '../widgets/recipe_photo.dart';
 import 'diary_screen.dart';
-import 'profile_screen.dart';
 
 class PlanScreen extends StatefulWidget {
   const PlanScreen({required this.api, super.key});
@@ -19,7 +18,6 @@ class _PlanScreenState extends State<PlanScreen> {
   Map<String, dynamic>? diary;
   DateTime selectedDate = DateTime.now();
   bool loading = true;
-  bool needsRenewal = false;
   String? error;
 
   String _iso(DateTime value) =>
@@ -35,7 +33,6 @@ class _PlanScreenState extends State<PlanScreen> {
     setState(() {
       loading = true;
       error = null;
-      needsRenewal = false;
     });
     try {
       // The plan covering today is the source of truth. When the previous plan has
@@ -55,11 +52,8 @@ class _PlanScreenState extends State<PlanScreen> {
       _selectAvailableDate();
       await _loadDiary();
     } on ApiException catch (exception) {
-      if (exception.statusCode == 402) {
-        needsRenewal = true;
-      } else {
-        error = exception.message;
-      }
+      // 402 (no subscription) is handled app-wide by the paywall.
+      error = exception.message;
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -111,13 +105,9 @@ class _PlanScreenState extends State<PlanScreen> {
       );
       await _loadDiary();
     } on ApiException catch (exception) {
-      if (exception.statusCode == 402) {
-        needsRenewal = true;
-      } else {
-        error = exception.statusCode == 404
-            ? 'На выбранный день рацион ещё не составлен'
-            : exception.message;
-      }
+      error = exception.statusCode == 404
+          ? 'На выбранный день рацион ещё не составлен'
+          : exception.message;
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -134,11 +124,8 @@ class _PlanScreenState extends State<PlanScreen> {
       _selectAvailableDate();
       await _loadDiary();
     } on ApiException catch (exception) {
-      if (exception.statusCode == 402) {
-        needsRenewal = true;
-      } else {
-        error = exception.message;
-      }
+      // 402 (no subscription) is handled app-wide by the paywall.
+      error = exception.message;
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -209,17 +196,6 @@ class _PlanScreenState extends State<PlanScreen> {
                 child: Padding(
                   padding: EdgeInsets.all(44),
                   child: CircularProgressIndicator(color: olive),
-                ),
-              )
-            else if (needsRenewal)
-              _RenewalCard(
-                onRetry: _load,
-                onRenew: () => _openSubPage(
-                  ProfileScreen(
-                    api: widget.api,
-                    onLogout: () async {},
-                    allowLogout: false,
-                  ),
                 ),
               )
             else if (error != null)
@@ -1362,39 +1338,6 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
       trailing: Text(
         '≈ ${total.round()} ₽',
         style: const TextStyle(color: olive, fontWeight: FontWeight.w700),
-      ),
-    ),
-  );
-}
-
-class _RenewalCard extends StatelessWidget {
-  const _RenewalCard({required this.onRetry, required this.onRenew});
-  final VoidCallback onRetry;
-  final VoidCallback onRenew;
-  @override
-  Widget build(BuildContext context) => Card(
-    child: Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        children: [
-          const Icon(Icons.lock_clock_outlined, size: 52, color: olive),
-          const SizedBox(height: 14),
-          const Text(
-            'Доступ к рациону закончился',
-            style: TextStyle(fontSize: 22),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Продлите подписку в профиле, чтобы снова открыть рацион и календарь.',
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 16),
-          FilledButton(
-            onPressed: onRenew,
-            child: const Text('Продлить подписку'),
-          ),
-          TextButton(onPressed: onRetry, child: const Text('Проверить оплату')),
-        ],
       ),
     ),
   );

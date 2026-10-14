@@ -20,7 +20,8 @@ openssl rand -hex 32          # значение для SECRET_KEY
 | Переменная | Значение |
 |---|---|
 | `SECRET_KEY` | результат `openssl rand -hex 32` |
-| `DOMAIN`, `CORS_ORIGINS`, `RECIPE_IMAGE_PUBLIC_BASE_URL`, `BILLING_RETURN_URL` | ваш домен API |
+| `DOMAIN`, `CORS_ORIGINS`, `RECIPE_IMAGE_PUBLIC_BASE_URL` | ваш домен API |
+| `TELEGRAM_BOT_USERNAME`, `TELEGRAM_BOT_API_SECRET` | имя бота оплаты и общий секрет (`openssl rand -hex 32`) |
 | `POSTGRES_PASSWORD` и пароль внутри `DATABASE_URL` | одинаковый длинный пароль |
 | `LEGAL_OPERATOR_NAME`, `LEGAL_CONTACT_EMAIL` | юрлицо/ИП и почта для обращений по персональным данным |
 
@@ -66,7 +67,9 @@ cd backend && docker compose --profile https up -d --build
    docker compose run --rm --user root --entrypoint chown backend -R 10001:10001 /app/media
    ```
 2. В `.env` добавьте `DOMAIN`, `LEGAL_*`, обновите `CORS_ORIGINS`,
-   `RECIPE_IMAGE_PUBLIC_BASE_URL` и `BILLING_RETURN_URL` на `https://`-адрес.
+   `RECIPE_IMAGE_PUBLIC_BASE_URL` на `https://`-адрес. Миграция БД при старте
+   удаляет таблицы ЮKassa/CloudPayments и выдаёт всем существующим аккаунтам
+   пробный период 3 дня от момента обновления; оплаченные периоды сохраняются.
 3. Запустите с профилем `https`. Порт 8000 перестанет быть доступен снаружи. Старые
    сборки приложения с адресом `http://IP:8000` после этого не подключатся — выпустите
    новую сборку с HTTPS-адресом (раздел 3).
@@ -87,9 +90,9 @@ docker compose run --rm --entrypoint python backend \
 
 Настройка — в [INTEGRATIONS.md](INTEGRATIONS.md). Минимум для запуска продаж:
 
-- [ ] Оплата: `BILLING_PROVIDER=yookassa` или `cloudpayments` и webhook на
-      `https://<домен>/v1/billing/webhooks/<провайдер>`. Пока стоит `stub`, кнопка
-      оплаты в production отвечает «оплата временно недоступна».
+- [ ] Telegram-бот оплаты подключён по контракту из INTEGRATIONS.md, раздел 1.
+      Пока `TELEGRAM_BOT_USERNAME` не задан, кнопка оплаты скрыта, и после
+      пробного периода пользователи не смогут продлить доступ.
 - [ ] Вход через Apple/Google: client ID на сервере и в сборке приложения.
 - [ ] Распознавание фото и AI-консультант: ключи провайдеров. Без них пользователь
       видит «временно недоступно»: заглушки в production отключены.
@@ -155,9 +158,10 @@ flutter build ipa --release --dart-define-from-file=config/production.json
 - [ ] **[решение] Идентификаторы приложения.** Сейчас Android — `ru.calmap.calmap_mobile`,
       iOS — `ru.calmap.calmapMobile`. После первой публикации их нельзя изменить.
 - [ ] **[решение] Оплата на iOS.** Правило App Store 3.1.1 требует покупки цифровых
-      функций через In-App Purchase. Оплата через ЮKassa/CloudPayments во внешнем
-      браузере может стать причиной отказа. Варианты: подключить IAP, не продавать
-      тарифы в iOS-версии или согласовать исключение с Apple.
+      функций через In-App Purchase, а 3.1.3 запрещает направлять пользователя к
+      другим способам оплаты. Кнопка «Оплатить в Telegram» в iOS-версии может стать
+      причиной отказа. Варианты: подключить IAP для iOS, убрать из iOS-версии кнопку
+      и упоминание оплаты или согласовать исключение с Apple.
 - [ ] **[решение] Юридическая проверка** текстов `backend/app/legal/*.md` и
       уведомление Роскомнадзора об обработке персональных данных (152-ФЗ).
 - [ ] Вход через Google на iOS: добавьте `GoogleService-Info.plist` и URL scheme
@@ -165,5 +169,5 @@ flutter build ipa --release --dart-define-from-file=config/production.json
 - [ ] Sign in with Apple включён для bundle ID в Apple Developer.
 - [ ] Иконки и экран запуска: `ios/Runner/Assets.xcassets/LaunchImage.imageset`
       содержит заготовки Flutter — замените своими изображениями.
-- [ ] Проверка на реальном устройстве: регистрация, анкета, рацион, фото, оплата
-      (тестовый магазин провайдера), удаление аккаунта.
+- [ ] Проверка на реальном устройстве: регистрация, анкета, рацион, фото, оплата в
+      боте и возврат в приложение, окончание пробного периода, удаление аккаунта.

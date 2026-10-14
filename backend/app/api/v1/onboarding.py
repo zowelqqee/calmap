@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
-from app.api.deps import CurrentUser, DbSession
+from app.api.deps import CurrentUser, DbSession, require_access
 from app.db.models import OnboardingDraft, UserProfile
 from app.domain.enums import ActivityLevel, BudgetType, DietType, Goal, Sex, WorkoutLocation
 from app.schemas.onboarding import (
@@ -120,7 +120,7 @@ async def step_workout_location(
     return await _save_step(session, user, 6, payload.model_dump(mode="json"))
 
 
-@router.post("/complete", response_model=CompleteOut)
+@router.post("/complete", response_model=CompleteOut, dependencies=[Depends(require_access)])
 async def complete(user: CurrentUser, session: DbSession) -> CompleteOut:
     """Materialise the profile, compute targets and build the first week's plan.
 

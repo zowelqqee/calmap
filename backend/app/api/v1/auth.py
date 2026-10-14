@@ -6,7 +6,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import delete, select
 
-from app.api.deps import CurrentSubscription, CurrentUser, DbSession
+from app.api.deps import CurrentAccess, CurrentUser, DbSession
 from app.core.config import settings
 from app.core.rate_limit import limit_auth
 from app.core.security import (
@@ -17,8 +17,9 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.db.models import OAuthIdentity, Subscription, User
+from app.db.models import OAuthIdentity, User
 from app.services.oauth import OAuthVerificationError, verify_oauth_token
+from app.services.subscription import new_subscription
 from app.schemas.auth import (
     LoginRequest,
     OAuthRequest,
@@ -59,7 +60,7 @@ async def register(payload: RegisterRequest, session: DbSession) -> TokenPair:
     )
     session.add(user)
     await session.flush()
-    session.add(Subscription(user_id=user.id, tier="free"))
+    session.add(new_subscription(user.id))
     await session.flush()
     return _tokens(user.id)
 
@@ -105,7 +106,7 @@ async def oauth(provider: str, payload: OAuthRequest, session: DbSession) -> Tok
         user = User(email=email, region_code=settings.default_region_code)
         session.add(user)
         await session.flush()
-        session.add(Subscription(user_id=user.id, tier="free"))
+        session.add(new_subscription(user.id))
 
     session.add(
         OAuthIdentity(user_id=user.id, provider=provider, subject=subject, email=email)
@@ -128,7 +129,7 @@ async def refresh(payload: RefreshRequest, session: DbSession) -> TokenPair:
 
 
 @router.get("/me", response_model=UserOut)
-async def me(user: CurrentUser, subscription: CurrentSubscription) -> UserOut:
+async def me(user: CurrentUser, access: CurrentAccess) -> UserOut:
     return UserOut(
         id=user.id,
         email=user.email,
@@ -136,7 +137,7 @@ async def me(user: CurrentUser, subscription: CurrentSubscription) -> UserOut:
         avatar_url=user.avatar_url,
         region_code=user.region_code,
         onboarding_completed=user.onboarding_completed_at is not None,
-        tier=subscription.tier,
+        tier=access.tier if access.has_access else None,
     )
 
 
@@ -144,7 +145,7 @@ async def me(user: CurrentUser, subscription: CurrentSubscription) -> UserOut:
 async def update_me(
     payload: ProfileUpdate,
     user: CurrentUser,
-    subscription: CurrentSubscription,
+    access: CurrentAccess,
     session: DbSession,
 ) -> UserOut:
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -157,7 +158,7 @@ async def update_me(
         avatar_url=user.avatar_url,
         region_code=user.region_code,
         onboarding_completed=user.onboarding_completed_at is not None,
-        tier=subscription.tier,
+        tier=access.tier if access.has_access else None,
     )
 
 

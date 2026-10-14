@@ -7,10 +7,12 @@ diary → photo recognition. If this passes, the product's spine works.
 from __future__ import annotations
 
 import io
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 import pytest
 from httpx import AsyncClient
+
+from tests.conftest import pay
 
 ONBOARDING_STEPS = [
     ("personal", {"sex": "male", "birth_date": "1997-04-12", "height_cm": 182, "weight_kg": 84}),
@@ -575,12 +577,14 @@ async def test_identical_photo_is_not_charged_twice(auth_client: AsyncClient):
     assert first.json()["recognition_id"] == second.json()["recognition_id"]
 
 
-async def test_free_tier_photo_quota_is_enforced(auth_client: AsyncClient):
+async def test_trial_photo_quota_is_enforced(auth_client: AsyncClient):
     await complete_onboarding(auth_client)
-    assert (
-        await auth_client.post("/v1/vision/recognize", files=fake_photo(b"one"))
-    ).status_code == 200
-    blocked = await auth_client.post("/v1/vision/recognize", files=fake_photo(b"two"))
+    for index in range(5):
+        response = await auth_client.post(
+            "/v1/vision/recognize", files=fake_photo(f"photo-{index}".encode())
+        )
+        assert response.status_code == 200
+    blocked = await auth_client.post("/v1/vision/recognize", files=fake_photo(b"sixth"))
     assert blocked.status_code == 402
     assert "limit" in blocked.json()["detail"]
 
@@ -613,36 +617,7 @@ async def test_confirming_a_recognition_writes_the_diary_and_records_the_edit(
 # ------------------------------------------------------------------------ integrations
 
 
-async def test_billing_stub_checkout_webhook_is_idempotent(auth_client: AsyncClient):
-    plans = await auth_client.get("/v1/billing/plans")
-    assert plans.status_code == 200
-    assert {p["tier"] for p in plans.json()} == {"base", "pro"}
-
-    checkout = await auth_client.post("/v1/billing/checkout", json={"tier": "pro"})
-    assert checkout.status_code == 201, checkout.text
-    payment_id = checkout.json()["payment_id"]
-    assert checkout.json()["checkout_url"]
-
-    webhook = {
-        "id": "stub-event-1",
-        "event": "payment.succeeded",
-        "object": {
-            "id": f"stub-{payment_id}",
-            "status": "succeeded",
-            "metadata": {"payment_id": payment_id, "tier": "pro"},
-        },
-    }
-    first = await auth_client.post("/v1/billing/webhooks/stub", json=webhook)
-    second = await auth_client.post("/v1/billing/webhooks/stub", json=webhook)
-    assert first.status_code == 200 and first.json()["processed"] is True
-    assert second.status_code == 200 and second.json()["processed"] is False
-
-    entitlement = (await auth_client.get("/v1/me/entitlements")).json()
-    assert entitlement["tier"] == "pro"
-    assert entitlement["status"] == "active"
-
-
-async def test_free_tier_cannot_use_assistant(auth_client: AsyncClient):
+async def test_trial_cannot_use_assistant(auth_client: AsyncClient):
     await complete_onboarding(auth_client)
     response = await auth_client.post(
         "/v1/assistant/chat", json={"message": "Что съесть после тренировки?"}
@@ -652,20 +627,7 @@ async def test_free_tier_cannot_use_assistant(auth_client: AsyncClient):
 
 async def test_pro_tier_assistant_and_retail_offers(auth_client: AsyncClient):
     result = await complete_onboarding(auth_client)
-    checkout = await auth_client.post("/v1/billing/checkout", json={"tier": "pro"})
-    payment_id = checkout.json()["payment_id"]
-    await auth_client.post(
-        "/v1/billing/webhooks/stub",
-        json={
-            "id": "stub-event-assistant",
-            "event": "payment.succeeded",
-            "object": {
-                "id": f"stub-{payment_id}",
-                "status": "succeeded",
-                "metadata": {"payment_id": payment_id, "tier": "pro"},
-            },
-        },
-    )
+    await pay(auth_client, "pro")
     chat = await auth_client.post(
         "/v1/assistant/chat", json={"message": "Как распределить белок?"}
     )
@@ -684,56 +646,6 @@ async def test_pro_tier_assistant_and_retail_offers(auth_client: AsyncClient):
     assert offer["price_type"] == "estimate"
     assert offer["retailer"] == "Пятёрочка"
     assert offer["available"] is None
-
-
-async def test_billing_webhook_rejects_wrong_amount_and_foreign_provider(auth_client: AsyncClient):
-    checkout = await auth_client.post("/v1/billing/checkout", json={"tier": "pro"})
-    payment_id = checkout.json()["payment_id"]
-    tampered = await auth_client.post(
-        "/v1/billing/webhooks/stub",
-        json={
-            "id": "stub-event-underpaid",
-            "event": "payment.succeeded",
-            "object": {
-                "id": f"stub-{payment_id}",
-                "status": "succeeded",
-                "amount": {"value": "1.00", "currency": "RUB"},
-                "metadata": {"payment_id": payment_id},
-            },
-        },
-    )
-    assert tampered.status_code == 200
-    assert (await auth_client.get("/v1/me/entitlements")).json()["tier"] == "free"
-
-    # A provider that is not configured cannot be used to deliver events at all.
-    foreign = await auth_client.post("/v1/billing/webhooks/yookassa", json={"object": {}})
-    assert foreign.status_code == 404
-
-
-async def test_repeat_purchase_extends_remaining_period(auth_client: AsyncClient):
-    ends = []
-    for index in range(2):
-        checkout = await auth_client.post("/v1/billing/checkout", json={"tier": "base"})
-        payment_id = checkout.json()["payment_id"]
-        response = await auth_client.post(
-            "/v1/billing/webhooks/stub",
-            json={
-                "id": f"stub-extend-{payment_id}",
-                "event": "payment.succeeded",
-                "object": {
-                    "id": f"stub-{payment_id}",
-                    "status": "succeeded",
-                    "amount": {"value": "299.00", "currency": "RUB"},
-                    "metadata": {"payment_id": payment_id},
-                },
-            },
-        )
-        assert response.json()["processed"] is True
-        subscription = (await auth_client.get("/v1/billing/subscription")).json()
-        assert subscription["tier"] == "base"
-        assert subscription["auto_renew"] is False
-        ends.append(datetime.fromisoformat(subscription["current_period_end"]))
-    assert (ends[1] - ends[0]).days == 30
 
 
 async def test_account_deletion_removes_user_and_invalidates_tokens(auth_client: AsyncClient):
@@ -838,7 +750,3 @@ async def test_production_refuses_stub_providers(auth_client: AsyncClient, monke
     )
     assert photo.status_code == 503
     assert "key" not in photo.text.lower()
-    checkout = await auth_client.post("/v1/billing/checkout", json={"tier": "pro"})
-    assert checkout.status_code == 503
-    webhook = await auth_client.post("/v1/billing/webhooks/stub", json={"object": {}})
-    assert webhook.status_code == 404

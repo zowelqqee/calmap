@@ -19,6 +19,9 @@ os.environ["ENV"] = "local"
 os.environ["VISION_PROVIDER"] = "stub"
 os.environ["SECRET_KEY"] = "test-secret-key-not-used-anywhere-else"
 os.environ["AUTH_RATE_LIMIT_PER_MINUTE"] = "0"
+os.environ["TELEGRAM_BOT_USERNAME"] = "calmap_test_bot"
+os.environ["TELEGRAM_BOT_API_SECRET"] = "test-bot-secret-0123456789abcdef0123456789"
+BOT_HEADERS = {"X-Bot-Secret": os.environ["TELEGRAM_BOT_API_SECRET"]}
 
 import psycopg  # noqa: E402
 import pytest  # noqa: E402
@@ -79,3 +82,44 @@ async def auth_client(client: AsyncClient) -> AsyncClient:
     assert response.status_code == 201, response.text
     client.headers["Authorization"] = f"Bearer {response.json()['access_token']}"
     return client
+
+
+_telegram_ids = iter(range(10_000_000, 99_999_999))
+
+
+async def link_telegram(client: AsyncClient) -> int:
+    """Open the bot link from the app and redeem it as the bot would."""
+    link = await client.post("/v1/me/subscription/telegram-link")
+    assert link.status_code == 201, link.text
+    code = link.json()["url"].split("start=", 1)[1]
+    telegram_user_id = next(_telegram_ids)
+    response = await client.post(
+        "/v1/bot/link",
+        json={"code": code, "telegram_user_id": telegram_user_id},
+        headers=BOT_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    return telegram_user_id
+
+
+async def pay(client: AsyncClient, tier: str, days: int = 30) -> int:
+    """Link Telegram and report a paid period, as the payment bot will."""
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    telegram_user_id = await link_telegram(client)
+    response = await client.post(
+        "/v1/bot/subscription/events",
+        json={
+            "event_id": f"test-{uuid.uuid4().hex}",
+            "telegram_user_id": telegram_user_id,
+            "status": "paid",
+            "tier": tier,
+            "paid_until": (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(),
+            "amount": 499,
+            "currency": "RUB",
+        },
+        headers=BOT_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    return telegram_user_id

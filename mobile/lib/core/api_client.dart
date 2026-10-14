@@ -38,6 +38,10 @@ String configuredBaseUrl() {
 
 /// Russian text for the backend's machine-oriented error details.
 String humanizeApiError(int statusCode, dynamic detail) {
+  if (detail is Map && detail['message'] is String) {
+    // Structured errors (e.g. subscription_required) carry their own Russian text.
+    return detail['message'] as String;
+  }
   if (detail is List) {
     // FastAPI validation errors: [{loc: [...], msg: ...}, ...]
     return 'Проверьте введённые данные';
@@ -73,16 +77,13 @@ String humanizeApiError(int statusCode, dynamic detail) {
     if (text.startsWith(entry.key)) return entry.value;
   }
   if (text.startsWith('daily photo limit reached')) {
-    return 'Лимит распознаваний на сегодня исчерпан. Больше фото — на тарифах BASE и PRO';
+    return 'Лимит распознаваний на сегодня исчерпан. Больше фото — на тарифе PRO';
   }
   if (text.startsWith('monthly assistant limit reached')) {
     return 'Лимит сообщений AI-консультанту на этот месяц исчерпан';
   }
   if (text.startsWith('onboarding is not complete')) {
     return 'Завершите анкету, чтобы продолжить';
-  }
-  if (text.startsWith('subscription is not active')) {
-    return 'Тариф неактивен. Продлите доступ в профиле';
   }
   if (text.startsWith('too many') || statusCode == 429) {
     return 'Слишком много попыток. Повторите через минуту';
@@ -137,6 +138,10 @@ class ApiClient {
   /// Called once when the session can no longer be refreshed (expired, revoked or
   /// deleted account). The app returns to the sign-in screen.
   VoidCallback? onSessionExpired;
+
+  /// Called when the server refuses a feature because there is no paid period or
+  /// trial (402 `subscription_required`). The app shows the paywall.
+  VoidCallback? onSubscriptionRequired;
 
   static const _networkTimeout = Duration(seconds: 15);
   static const _slowTimeout = Duration(seconds: 75);
@@ -504,6 +509,11 @@ class ApiClient {
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
       final detail = decoded is Map ? decoded['detail'] : null;
+      if (response.statusCode == 402 &&
+          detail is Map &&
+          detail['code'] == 'subscription_required') {
+        onSubscriptionRequired?.call();
+      }
       throw ApiException(
         response.statusCode,
         humanizeApiError(response.statusCode, detail),

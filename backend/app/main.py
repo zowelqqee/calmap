@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
-from app.api.legal import pages_router, router as legal_router
+from app.api.legal import router as legal_router
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.db.session import engine
@@ -30,7 +30,6 @@ def _warn_about_unfinished_configuration() -> None:
     stubs = [
         name
         for name, value in {
-            "BILLING_PROVIDER": settings.billing_provider,
             "VISION_PROVIDER": settings.vision_provider,
             "ASSISTANT_PROVIDER": settings.assistant_provider,
         }.items()
@@ -38,6 +37,11 @@ def _warn_about_unfinished_configuration() -> None:
     ]
     if stubs:
         logger.warning("production is running with stub providers: %s", ", ".join(stubs))
+    if not settings.telegram_bot_username or not settings.telegram_bot_api_secret:
+        logger.warning(
+            "TELEGRAM_BOT_USERNAME / TELEGRAM_BOT_API_SECRET are not set: "
+            "users cannot pay and subscription status cannot be updated"
+        )
     if not settings.legal_operator_name or not settings.legal_contact_email:
         logger.warning(
             "LEGAL_OPERATOR_NAME / LEGAL_CONTACT_EMAIL are not set: "
@@ -100,7 +104,6 @@ async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
 
 app.include_router(api_router)
 app.include_router(legal_router)
-app.include_router(pages_router)
 app.mount("/media", StaticFiles(directory=media_root), name="media")
 
 

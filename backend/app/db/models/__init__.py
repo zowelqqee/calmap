@@ -5,16 +5,18 @@ re-exports exhaustive.
 """
 
 from app.db.models.assistant import AssistantConversation, AssistantMessage
-from app.db.models.billing import (
-    TIER_LIMITS,
-    TIER_PRICES_RUB,
-    BillingEvent,
-    Payment,
-    Subscription,
-)
 from app.db.models.catalog import FavoriteRecipe, Product, ProductPrice, Recipe, RecipeItem
 from app.db.models.diary import DiaryEntry, VisionRecognition
 from app.db.models.plan import MealPlan, MealPlanDay, MealPlanItem
+from app.db.models.subscription import (
+    PAID_TIERS,
+    TIER_LIMITS,
+    PaymentStatus,
+    Subscription,
+    SubscriptionEvent,
+    TelegramLink,
+    TelegramLinkCode,
+)
 from app.db.models.user import (
     OAuthIdentity,
     OnboardingDraft,
@@ -25,11 +27,10 @@ from app.db.models.user import (
 from app.db.models.wellness import ProgressEntry, Workout, WorkoutExercise
 
 __all__ = [
+    "PAID_TIERS",
     "TIER_LIMITS",
-    "TIER_PRICES_RUB",
     "AssistantConversation",
     "AssistantMessage",
-    "BillingEvent",
     "DiaryEntry",
     "FavoriteRecipe",
     "MealPlan",
@@ -42,8 +43,11 @@ __all__ = [
     "ProgressEntry",
     "Recipe",
     "RecipeItem",
-    "Payment",
+    "PaymentStatus",
     "Subscription",
+    "SubscriptionEvent",
+    "TelegramLink",
+    "TelegramLinkCode",
     "User",
     "UserProfile",
     "UserTargets",
