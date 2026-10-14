@@ -1,8 +1,8 @@
 """Server-to-server API for the Telegram payment bot.
 
-The bot authenticates with the shared secret in `X-Bot-Secret`. It links Telegram
-accounts to app accounts with the one-time code from the app's /start link, then
-pushes every payment status change here. These endpoints are the only way payment
+The bot authenticates with the shared secret in `X-Bot-Secret`. It links a Telegram
+account to the app account with the same phone number (shared via Telegram's
+contact button), then pushes every payment status change here. These endpoints are the only way payment
 status enters the database.
 """
 
@@ -31,10 +31,11 @@ from app.schemas.subscription import (
 from app.services.subscription import (
     apply_bot_event,
     evaluate,
+    link_telegram_by_phone,
     load_subscription,
-    redeem_link_code,
     user_for_telegram,
 )
+from app.services.phone_auth import normalize_phone
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +55,17 @@ router = APIRouter(prefix="/bot", tags=["telegram bot"], dependencies=[Depends(v
 
 @router.post("/link", response_model=BotLinkOut)
 async def link(payload: BotLinkRequest, session: DbSession) -> BotLinkOut:
-    """Called when a user opens the bot with /start <code> from the app."""
-    user_id = await redeem_link_code(
-        session, payload.code, payload.telegram_user_id, payload.telegram_username
+    """Tie the Telegram account to the app account with the same phone number."""
+    phone = normalize_phone(payload.phone)
+    if phone is None:
+        raise HTTPException(422, "phone must be a Russian mobile number")
+    user = await link_telegram_by_phone(
+        session, phone, payload.telegram_user_id, payload.telegram_username
     )
-    if user_id is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "link code is invalid or expired")
-    user = await user_for_telegram(session, payload.telegram_user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no account with this phone")
     subscription = await load_subscription(session, user)
-    return BotLinkOut(user_id=user_id, subscription=await subscription_out(session, subscription))
+    return BotLinkOut(user_id=user.id, subscription=await subscription_out(session, subscription))
 
 
 @router.post("/subscription/events", response_model=BotEventOut)

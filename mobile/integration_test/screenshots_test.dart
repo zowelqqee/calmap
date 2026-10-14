@@ -42,10 +42,7 @@ void main() {
     await show(tester, const _DemoSplash());
     await capture(tester, '01_splash');
 
-    await show(
-      tester,
-      IntroScreen(onCompleted: ({required bool register}) async {}),
-    );
+    await show(tester, IntroScreen(onCompleted: () async {}));
     await capture(tester, '02_intro_personal_plan');
     await tester.drag(find.byType(PageView), const Offset(-360, 0));
     await capture(tester, '03_intro_products');
@@ -146,7 +143,6 @@ void main() {
           'state': 'expired',
           'has_access': false,
           'tier': 'base',
-          'payment_available': true,
         }),
         onRecheck: () async => false,
         onLogout: () async {},
@@ -180,7 +176,7 @@ class DemoApiClient extends ApiClient {
     if (path == '/v1/auth/me') {
       return {
         'id': 'demo-user',
-        'email': 'alexey@calmap.ru',
+        'phone': '79991234567',
         'name': 'Алексей',
         'avatar_url': null,
         'region_code': 'RU-MOW',
@@ -205,8 +201,6 @@ class DemoApiClient extends ApiClient {
             .add(const Duration(days: 20))
             .toUtc()
             .toIso8601String(),
-        'telegram_linked': true,
-        'payment_available': true,
       };
     }
     if (path == '/v1/progress/overview') return _progress;
@@ -296,9 +290,6 @@ class DemoApiClient extends ApiClient {
       };
     }
     if (path == '/v1/onboarding/complete') return {'plan_id': 'demo-plan'};
-    if (path == '/v1/me/subscription/telegram-link') {
-      return {'url': 'https://t.me/calmap_bot?start=demo'};
-    }
     if (path.contains('/workouts/')) return _workout;
     if (path.endsWith('/favorite')) return {'is_favorite': true};
     return <String, dynamic>{};

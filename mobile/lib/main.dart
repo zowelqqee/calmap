@@ -33,7 +33,6 @@ class _CalmapAppState extends State<CalmapApp> with WidgetsBindingObserver {
   final navigatorKey = GlobalKey<NavigatorState>();
   AppStage stage = AppStage.loading;
   String? startupError;
-  bool startInRegisterMode = false;
   SubscriptionStatus? subscription;
   bool onboardingCompleted = false;
   Timer? _accessTimer;
@@ -184,15 +183,13 @@ class _CalmapAppState extends State<CalmapApp> with WidgetsBindingObserver {
           },
         ),
         AppStage.intro => IntroScreen(
-          onCompleted: ({required bool register}) async {
+          onCompleted: () async {
             await api.markIntroSeen();
-            startInRegisterMode = register;
             _goTo(AppStage.auth);
           },
         ),
         AppStage.auth => AuthScreen(
           api: api,
-          initialRegister: startInRegisterMode,
           onAuthenticated: _afterAuthentication,
         ),
         AppStage.onboarding => OnboardingScreen(

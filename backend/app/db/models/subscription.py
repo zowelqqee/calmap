@@ -69,22 +69,6 @@ class TelegramLink(Base, UUIDPrimaryKey, Timestamped):
     telegram_username: Mapped[str | None] = mapped_column(String(64))
 
 
-class TelegramLinkCode(Base, UUIDPrimaryKey, Timestamped):
-    """One-time code the app puts into the bot's /start link.
-
-    Only a SHA-256 hash is stored: a leaked table cannot be used to link accounts.
-    """
-
-    __tablename__ = "telegram_link_codes"
-
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
-    code_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
 class SubscriptionEvent(Base, UUIDPrimaryKey, Timestamped):
     """Ledger of status updates received from the bot (idempotent by event_id)."""
 

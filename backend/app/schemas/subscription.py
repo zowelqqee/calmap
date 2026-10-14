@@ -22,20 +22,16 @@ class SubscriptionOut(BaseModel):
     #: Russian text for the paywall when there is no access
     message: str | None
     telegram_linked: bool
-    #: False until TELEGRAM_BOT_USERNAME is configured: the app hides the pay button
-    payment_available: bool
-
-
-class TelegramLinkOut(BaseModel):
-    url: str
-    expires_at: datetime
 
 
 # ------------------------------------------------------------------ bot contract
 
 
 class BotLinkRequest(BaseModel):
-    code: str = Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    """Sent after the user shares their contact in the bot. The bot must check that
+    the shared contact belongs to the sender (contact.user_id == from.id)."""
+
+    phone: str = Field(min_length=10, max_length=20)
     telegram_user_id: int = Field(gt=0)
     telegram_username: str | None = Field(default=None, max_length=64)
 

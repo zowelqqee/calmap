@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -6,15 +8,15 @@ import '../core/legal.dart';
 import '../core/oauth_service.dart';
 import '../core/theme.dart';
 
+/// Sign-in by a Russian mobile number and an SMS code (the first sign-in creates
+/// the account), or through VK ID when the build is configured for it.
 class AuthScreen extends StatefulWidget {
   const AuthScreen({
     required this.api,
     required this.onAuthenticated,
-    this.initialRegister = false,
     super.key,
   });
 
-  final bool initialRegister;
   final ApiClient api;
   final Future<void> Function() onAuthenticated;
 
@@ -23,36 +25,55 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen> {
-  final email = TextEditingController();
-  final password = TextEditingController();
-  late bool register = widget.initialRegister;
-  bool loading = false;
-  bool obscurePassword = true;
-  bool personalDataConsent = false;
-  String? error;
+  final phone = TextEditingController();
+  final code = TextEditingController();
   final oauth = OAuthService();
+
+  /// The number the code was sent to (normalised digits, 7XXXXXXXXXX).
+  String? sentTo;
+  bool loading = false;
+
+  /// Shown once the server says this sign-in creates a new account.
+  bool consentNeeded = false;
+  bool personalDataConsent = false;
+  int resendIn = 0;
+  Timer? _resendTimer;
+  String? error;
 
   @override
   void dispose() {
-    email.dispose();
-    password.dispose();
+    _resendTimer?.cancel();
+    phone.dispose();
+    code.dispose();
     super.dispose();
   }
 
-  Future<void> _submit() async {
-    final emailText = email.text.trim();
-    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(emailText)) {
-      setState(() => error = 'Введите корректный email');
-      return;
+  /// 10 digits after +7 for a Russian mobile number, or null.
+  String? get _phoneDigits {
+    var digits = phone.text.replaceAll(RegExp(r'\D'), '');
+    if (digits.length == 11 && (digits[0] == '7' || digits[0] == '8')) {
+      digits = digits.substring(1);
     }
-    if (register && password.text.length < 8) {
-      setState(() => error = 'Пароль — не короче 8 символов');
-      return;
-    }
-    if (register && !personalDataConsent) {
-      setState(
-        () => error = 'Для регистрации нужно согласие на обработку данных',
-      );
+    return digits.length == 10 && digits.startsWith('9') ? digits : null;
+  }
+
+  void _startResendTimer(int seconds) {
+    _resendTimer?.cancel();
+    setState(() => resendIn = seconds);
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || resendIn <= 1) {
+        timer.cancel();
+        if (mounted) setState(() => resendIn = 0);
+        return;
+      }
+      setState(() => resendIn -= 1);
+    });
+  }
+
+  Future<void> _requestCode() async {
+    final digits = _phoneDigits;
+    if (digits == null) {
+      setState(() => error = 'Введите российский мобильный номер');
       return;
     }
     setState(() {
@@ -60,14 +81,15 @@ class _AuthScreenState extends State<AuthScreen> {
       error = null;
     });
     try {
-      final tokens = await widget.api
-          .post(register ? '/v1/auth/register' : '/v1/auth/login', {
-            'email': emailText,
-            'password': password.text,
-            if (register) 'personal_data_consent': true,
-          });
-      await widget.api.saveTokens(tokens);
-      await widget.onAuthenticated();
+      final sent = await widget.api.post('/v1/auth/phone/code', {
+        'phone': '+7$digits',
+      });
+      if (!mounted) return;
+      setState(() {
+        sentTo = '7$digits';
+        code.clear();
+      });
+      _startResendTimer((sent['resend_in'] as num?)?.toInt() ?? 60);
     } on ApiException catch (exception) {
       if (mounted) setState(() => error = exception.message);
     } finally {
@@ -75,16 +97,50 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  Future<void> _oauth(String provider) async {
+  Future<void> _verify() async {
+    final number = sentTo;
+    if (number == null || code.text.length != 6 || loading) return;
+    if (consentNeeded && !personalDataConsent) {
+      setState(() => error = 'Отметьте согласие на обработку данных');
+      return;
+    }
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      final tokens = await widget.api.post('/v1/auth/phone/verify', {
+        'phone': '+$number',
+        'code': code.text,
+        'personal_data_consent': personalDataConsent,
+      });
+      await widget.api.saveTokens(tokens);
+      await widget.onAuthenticated();
+    } on ApiException catch (exception) {
+      if (!mounted) return;
+      setState(() {
+        if (exception.statusCode == 422) {
+          // New account: the code is still valid, the consent is missing.
+          consentNeeded = true;
+          error = 'Это новый аккаунт. Отметьте согласие и нажмите «Войти».';
+        } else {
+          error = exception.message;
+        }
+      });
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  Future<void> _vk() async {
     setState(() {
       loading = true;
       error = null;
     });
     try {
       final credential = await oauth.vk();
-      final tokens = await widget.api.post('/v1/auth/oauth/$provider', {
+      final tokens = await widget.api.post('/v1/auth/oauth/vk', {
         'id_token': credential.token,
-        // A first VK sign-in creates the account, which needs the consent.
         'personal_data_consent': personalDataConsent,
       });
       await widget.api.saveTokens(tokens);
@@ -92,9 +148,12 @@ class _AuthScreenState extends State<AuthScreen> {
     } on ApiException catch (exception) {
       if (mounted) {
         setState(() {
-          error = exception.message;
-          // New VK account without consent: show the consent checkbox.
-          if (exception.statusCode == 422) register = true;
+          if (exception.statusCode == 422) {
+            consentNeeded = true;
+            error = 'Отметьте согласие на обработку данных и повторите вход.';
+          } else {
+            error = exception.message;
+          }
         });
       }
     } on OAuthNotConfigured {
@@ -105,19 +164,25 @@ class _AuthScreenState extends State<AuthScreen> {
           exception.code.contains('cancel') ||
           (exception.message ?? '').toLowerCase().contains('cancel');
       if (mounted && !cancelled) {
-        setState(() => error = 'Не удалось войти через внешний сервис');
+        setState(() => error = 'Не удалось войти через VK ID');
       }
     } catch (_) {
-      if (mounted) {
-        setState(() => error = 'Не удалось войти через внешний сервис');
-      }
+      if (mounted) setState(() => error = 'Не удалось войти через VK ID');
     } finally {
       if (mounted) setState(() => loading = false);
     }
   }
 
+  String get _sentToLabel {
+    final n = sentTo ?? '';
+    if (n.length != 11) return '+$n';
+    return '+7 ${n.substring(1, 4)} ${n.substring(4, 7)}-'
+        '${n.substring(7, 9)}-${n.substring(9)}';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final codeStep = sentTo != null;
     return Scaffold(
       body: SafeArea(
         child: ListView(
@@ -147,49 +212,80 @@ class _AuthScreenState extends State<AuthScreen> {
             ),
             const SizedBox(height: 24),
             Text(
-              'Добро пожаловать',
+              codeStep ? 'Введите код' : 'Вход в Calmap',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.displayMedium,
             ),
             const SizedBox(height: 10),
             Text(
-              'Войдите или создайте аккаунт, чтобы продолжить',
+              codeStep
+                  ? 'Отправили SMS на $_sentToLabel'
+                  : 'Укажите номер телефона — пришлём код в SMS. '
+                        'Аккаунт создастся автоматически.',
               textAlign: TextAlign.center,
               style: Theme.of(
                 context,
               ).textTheme.bodyLarge?.copyWith(color: mutedInk),
             ),
-            const SizedBox(height: 34),
-            TextField(
-              controller: email,
-              keyboardType: TextInputType.emailAddress,
-              textInputAction: TextInputAction.next,
-              decoration: const InputDecoration(labelText: 'Email'),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: password,
-              obscureText: obscurePassword,
-              onSubmitted: (_) => _submit(),
-              decoration: InputDecoration(
-                labelText: 'Пароль',
-                suffixIcon: IconButton(
-                  style: IconButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    side: BorderSide.none,
-                  ),
-                  onPressed: () =>
-                      setState(() => obscurePassword = !obscurePassword),
-                  icon: Icon(
-                    obscurePassword
-                        ? Icons.visibility_outlined
-                        : Icons.visibility_off_outlined,
-                  ),
+            const SizedBox(height: 30),
+            if (!codeStep)
+              TextField(
+                controller: phone,
+                keyboardType: TextInputType.phone,
+                autofillHints: const [AutofillHints.telephoneNumber],
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[\d\s()+-]')),
+                  LengthLimitingTextInputFormatter(18),
+                ],
+                onSubmitted: (_) => _requestCode(),
+                decoration: const InputDecoration(
+                  labelText: 'Номер телефона',
+                  prefixText: '+7 ',
+                  hintText: '999 123-45-67',
                 ),
+              )
+            else ...[
+              TextField(
+                controller: code,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                autofillHints: const [AutofillHints.oneTimeCode],
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(6),
+                ],
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 26, letterSpacing: 8),
+                onChanged: (value) {
+                  if (value.length == 6 && !consentNeeded) _verify();
+                },
+                decoration: const InputDecoration(hintText: '••••••'),
               ),
-            ),
-            if (register) ...[
-              const SizedBox(height: 10),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  TextButton(
+                    onPressed: loading
+                        ? null
+                        : () => setState(() {
+                            sentTo = null;
+                            error = null;
+                          }),
+                    child: const Text('Изменить номер'),
+                  ),
+                  TextButton(
+                    onPressed: loading || resendIn > 0 ? null : _requestCode,
+                    child: Text(
+                      resendIn > 0
+                          ? 'Новый код через $resendIn с'
+                          : 'Отправить снова',
+                    ),
+                  ),
+                ],
+              ),
+            ],
+            if (consentNeeded) ...[
+              const SizedBox(height: 6),
               // 152-FZ art. 9: consent is a separate act, not part of the terms.
               CheckboxListTile(
                 value: personalDataConsent,
@@ -222,23 +318,15 @@ class _AuthScreenState extends State<AuthScreen> {
             ],
             const SizedBox(height: 20),
             FilledButton(
-              onPressed: loading ? null : _submit,
+              onPressed: loading ? null : (codeStep ? _verify : _requestCode),
               child: loading
                   ? const SizedBox.square(
                       dimension: 22,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : Text(register ? 'Создать аккаунт' : 'Войти'),
+                  : Text(codeStep ? 'Войти' : 'Получить код'),
             ),
-            TextButton(
-              onPressed: loading
-                  ? null
-                  : () => setState(() => register = !register),
-              child: Text(
-                register ? 'У меня уже есть аккаунт' : 'Зарегистрироваться',
-              ),
-            ),
-            if (_oauthProviders.isNotEmpty) ...[
+            if (OAuthService.vkClientId.isNotEmpty && !codeStep) ...[
               const SizedBox(height: 14),
               const Row(
                 children: [
@@ -251,17 +339,9 @@ class _AuthScreenState extends State<AuthScreen> {
                 ],
               ),
               const SizedBox(height: 14),
-              Wrap(
-                alignment: WrapAlignment.center,
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final entry in _oauthProviders.entries)
-                    _OAuthButton(
-                      label: entry.value,
-                      onTap: loading ? null : () => _oauth(entry.key),
-                    ),
-                ],
+              OutlinedButton(
+                onPressed: loading ? null : _vk,
+                child: const Text('Войти через VK ID'),
               ),
             ],
             const SizedBox(height: 22),
@@ -271,26 +351,4 @@ class _AuthScreenState extends State<AuthScreen> {
       ),
     );
   }
-}
-
-/// External sign-in buttons this build is configured for (Russian services only).
-Map<String, String> get _oauthProviders => {
-  if (OAuthService.vkClientId.isNotEmpty) 'vk': 'VK ID',
-};
-
-class _OAuthButton extends StatelessWidget {
-  const _OAuthButton({required this.label, required this.onTap});
-
-  final String label;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) => OutlinedButton(
-    onPressed: onTap,
-    style: OutlinedButton.styleFrom(
-      minimumSize: const Size(96, 48),
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-    ),
-    child: Text(label),
-  );
 }

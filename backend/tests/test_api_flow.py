@@ -12,7 +12,9 @@ from datetime import date, timedelta
 import pytest
 from httpx import AsyncClient
 
-from tests.conftest import pay
+from sqlalchemy import text
+
+from tests.conftest import last_sms_code, new_phone, pay, sign_in
 
 ONBOARDING_STEPS = [
     ("personal", {"sex": "male", "birth_date": "1997-04-12", "height_cm": 182, "weight_kg": 84}),
@@ -52,29 +54,68 @@ async def test_legal_pages_are_public_html(client: AsyncClient, page: str):
     assert (await client.get("/legal/unknown")).status_code == 404
 
 
-async def test_register_rejects_duplicate_email(client: AsyncClient):
-    payload = {"email": "dupe@example.com", "password": "correct-horse-battery", "personal_data_consent": True}
-    assert (await client.post("/v1/auth/register", json=payload)).status_code == 201
-    assert (await client.post("/v1/auth/register", json=payload)).status_code == 409
-
-
-async def test_login_returns_tokens_and_rejects_wrong_password(client: AsyncClient):
-    payload = {"email": "login@example.com", "password": "correct-horse-battery", "personal_data_consent": True}
-    await client.post("/v1/auth/register", json=payload)
-
-    good = await client.post("/v1/auth/login", json=payload)
-    assert good.status_code == 200
-    assert good.json()["access_token"]
-
-    bad = await client.post(
-        "/v1/auth/login", json={**payload, "password": "wrong-password-here"}
+async def test_phone_sign_in_creates_then_reuses_the_account(client: AsyncClient):
+    phone = new_phone()
+    first = await sign_in(client, f"+7 ({phone[1:4]}) {phone[4:7]}-{phone[7:9]}-{phone[9:]}")
+    again = await sign_in(client, "8" + phone[1:])
+    me = await client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {again['access_token']}"}
     )
-    assert bad.status_code == 401
+    assert me.json()["phone"] == phone
+    first_me = await client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {first['access_token']}"}
+    )
+    assert first_me.json()["id"] == me.json()["id"]
+
+
+async def test_wrong_code_is_rejected_and_attempts_are_limited(client: AsyncClient):
+    phone = new_phone()
+    await client.post("/v1/auth/phone/code", json={"phone": phone})
+    right = last_sms_code(phone)
+    wrong = "000000" if right != "000000" else "111111"
+    for _ in range(5):
+        response = await client.post(
+            "/v1/auth/phone/verify",
+            json={"phone": phone, "code": wrong, "personal_data_consent": True},
+        )
+        assert response.status_code == 401
+    # After five failures even the right code no longer works.
+    locked = await client.post(
+        "/v1/auth/phone/verify",
+        json={"phone": phone, "code": right, "personal_data_consent": True},
+    )
+    assert locked.status_code == 401
+    assert locked.json()["detail"] == "code expired"
+
+
+async def test_codes_cannot_be_requested_back_to_back(client: AsyncClient, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "phone_code_resend_seconds", 60)
+    phone = new_phone()
+    assert (await client.post("/v1/auth/phone/code", json={"phone": phone})).status_code == 200
+    again = await client.post("/v1/auth/phone/code", json={"phone": phone})
+    assert again.status_code == 429
+    assert int(again.headers["Retry-After"]) > 0
+
+
+async def test_only_russian_mobile_numbers_are_accepted(client: AsyncClient):
+    for phone in ("+1 650 555 0100", "+7 495 123-45-67", "12345"):
+        response = await client.post("/v1/auth/phone/code", json={"phone": phone})
+        assert response.status_code == 422, phone
+
+
+async def test_a_code_works_once(client: AsyncClient):
+    phone = new_phone()
+    await sign_in(client, phone)
+    reused = await client.post(
+        "/v1/auth/phone/verify", json={"phone": phone, "code": last_sms_code(phone)}
+    )
+    assert reused.status_code == 401
 
 
 async def test_refresh_token_round_trip(client: AsyncClient):
-    payload = {"email": "refresh@example.com", "password": "correct-horse-battery", "personal_data_consent": True}
-    tokens = (await client.post("/v1/auth/register", json=payload)).json()
+    tokens = await sign_in(client)
     refreshed = await client.post(
         "/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
     )
@@ -83,8 +124,7 @@ async def test_refresh_token_round_trip(client: AsyncClient):
 
 
 async def test_access_token_is_not_accepted_as_refresh_token(client: AsyncClient):
-    payload = {"email": "swap-token@example.com", "password": "correct-horse-battery", "personal_data_consent": True}
-    tokens = (await client.post("/v1/auth/register", json=payload)).json()
+    tokens = await sign_in(client)
     response = await client.post(
         "/v1/auth/refresh", json={"refresh_token": tokens["access_token"]}
     )
@@ -256,11 +296,8 @@ async def test_plan_is_scoped_to_its_owner(auth_client: AsyncClient, client: Asy
     plan_id = (await complete_onboarding(auth_client))["plan_id"]
 
     other = AsyncClient(transport=auth_client._transport, base_url="http://test")
-    registration = await other.post(
-        "/v1/auth/register",
-        json={"email": "intruder@example.com", "password": "correct-horse-battery", "personal_data_consent": True},
-    )
-    other.headers["Authorization"] = f"Bearer {registration.json()['access_token']}"
+    registration = await sign_in(other)
+    other.headers["Authorization"] = f"Bearer {registration['access_token']}"
     response = await other.get(f"/v1/meal-plans/{plan_id}")
     await other.aclose()
     assert response.status_code == 404
@@ -673,14 +710,18 @@ async def test_malformed_token_subject_is_401_not_500(client: AsyncClient):
 
 
 async def test_oauth_ignores_client_supplied_email(client: AsyncClient):
+    from app.db.session import SessionLocal
+
     victim = f"victim-{date.today().isoformat()}-{id(client)}@example.com"
-    registered = await client.post(
-        "/v1/auth/register", json={"email": victim, "password": "correct-horse-battery", "personal_data_consent": True}
-    )
-    victim_token = registered.json()["access_token"]
-    victim_id = (
-        await client.get("/v1/auth/me", headers={"Authorization": f"Bearer {victim_token}"})
-    ).json()["id"]
+    victim_token = (await sign_in(client))["access_token"]
+    headers = {"Authorization": f"Bearer {victim_token}"}
+    victim_id = (await client.get("/v1/auth/me", headers=headers)).json()["id"]
+    async with SessionLocal() as session:
+        await session.execute(
+            text("UPDATE users SET email = :email WHERE id = :id"),
+            {"email": victim, "id": victim_id},
+        )
+        await session.commit()
 
     attacker = await client.post(
         "/v1/auth/oauth/vk",
@@ -700,9 +741,10 @@ async def test_auth_endpoints_are_rate_limited(client: AsyncClient, monkeypatch)
 
     monkeypatch.setattr(settings, "auth_rate_limit_per_minute", 3)
     rate_limit.reset()
+    phone = new_phone()
     statuses = [
         (await client.post(
-            "/v1/auth/login", json={"email": "nobody@example.com", "password": "wrong-pass"}
+            "/v1/auth/phone/verify", json={"phone": phone, "code": "123456"}
         )).status_code
         for _ in range(4)
     ]

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from httpx import AsyncClient
 from sqlalchemy import text
 
-from tests.conftest import BOT_HEADERS, link_telegram, pay
+from tests.conftest import BOT_HEADERS, link_telegram, pay, sign_in
 from tests.test_api_flow import complete_onboarding
 
 
@@ -44,7 +44,6 @@ async def test_new_account_starts_with_a_three_day_trial(auth_client: AsyncClien
     assert subscription["days_left"] == 3
     assert subscription["payment_status"] == "none"
     assert subscription["telegram_linked"] is False
-    assert subscription["payment_available"] is True
     assert subscription["message"] is None
 
 
@@ -67,7 +66,6 @@ async def test_ended_trial_blocks_features_but_not_the_account(auth_client: Asyn
     # Account management keeps working without a subscription.
     assert (await auth_client.get("/v1/auth/me")).status_code == 200
     assert (await auth_client.get("/v1/onboarding/session")).status_code == 200
-    assert (await auth_client.post("/v1/me/subscription/telegram-link")).status_code == 201
 
 
 async def test_bot_payment_grants_the_tier_and_repeats_are_ignored(auth_client: AsyncClient):
@@ -124,31 +122,29 @@ async def test_lapsed_period_is_stored_as_expired(auth_client: AsyncClient):
     assert (await auth_client.get("/v1/meal-plans/current")).status_code == 402
 
 
-async def test_link_codes_are_single_use(auth_client: AsyncClient, client: AsyncClient):
-    link = (await auth_client.post("/v1/me/subscription/telegram-link")).json()
-    assert link["url"].startswith("https://t.me/calmap_test_bot?start=")
-    code = link["url"].split("start=", 1)[1]
-    body = {"code": code, "telegram_user_id": 424242001}
-    assert (await client.post("/v1/bot/link", json=body, headers=BOT_HEADERS)).status_code == 200
-    again = await client.post("/v1/bot/link", json=body, headers=BOT_HEADERS)
-    assert again.status_code == 404
-
-
-async def test_a_new_code_invalidates_the_previous_one(auth_client: AsyncClient):
-    first = (await auth_client.post("/v1/me/subscription/telegram-link")).json()["url"]
-    await auth_client.post("/v1/me/subscription/telegram-link")
-    stale = await auth_client.post(
+async def test_bot_links_telegram_by_the_confirmed_phone(auth_client: AsyncClient):
+    phone = auth_client.phone
+    linked = await auth_client.post(
         "/v1/bot/link",
-        json={"code": first.split("start=", 1)[1], "telegram_user_id": 424242002},
+        json={"phone": f"+{phone}", "telegram_user_id": 424242001, "telegram_username": "ivan"},
         headers=BOT_HEADERS,
     )
-    assert stale.status_code == 404
+    assert linked.status_code == 200
+    assert linked.json()["subscription"]["state"] == "trial"
+    assert (await auth_client.get("/v1/me/subscription")).json()["telegram_linked"] is True
+
+    unknown = await auth_client.post(
+        "/v1/bot/link",
+        json={"phone": "79990000001", "telegram_user_id": 424242002},
+        headers=BOT_HEADERS,
+    )
+    assert unknown.status_code == 404
 
 
 async def test_bot_api_requires_the_shared_secret(client: AsyncClient, monkeypatch):
     from app.core.config import settings
 
-    body = {"code": "x" * 16, "telegram_user_id": 1}
+    body = {"phone": "79990000002", "telegram_user_id": 1}
     assert (await client.post("/v1/bot/link", json=body)).status_code == 401
     wrong = await client.post("/v1/bot/link", json=body, headers={"X-Bot-Secret": "nope"})
     assert wrong.status_code == 401
@@ -173,28 +169,23 @@ async def test_invalid_paid_events_are_rejected(auth_client: AsyncClient):
 
 
 async def test_relinking_a_telegram_account_moves_it(client: AsyncClient):
-    from tests.conftest import _telegram_ids  # noqa: F401 — keeps ids unique across tests
-
-    tokens = []
-    for _ in range(2):
-        registered = await client.post(
-            "/v1/auth/register",
-            json={"email": f"relink-{uuid.uuid4().hex[:10]}@example.com",
-                  "password": "correct-horse-battery", "personal_data_consent": True},
-        )
-        tokens.append({"Authorization": f"Bearer {registered.json()['access_token']}"})
-    for headers in tokens:
-        url = (await client.post("/v1/me/subscription/telegram-link", headers=headers)).json()["url"]
+    accounts = [await sign_in(client) for _ in range(2)]
+    for account in accounts:
         linked = await client.post(
             "/v1/bot/link",
-            json={"code": url.split("start=", 1)[1], "telegram_user_id": 555000111},
+            json={"phone": account["phone"], "telegram_user_id": 555000111},
             headers=BOT_HEADERS,
         )
         assert linked.status_code == 200
-    first = (await client.get("/v1/me/subscription", headers=tokens[0])).json()
-    second = (await client.get("/v1/me/subscription", headers=tokens[1])).json()
-    assert first["telegram_linked"] is False
-    assert second["telegram_linked"] is True
+    statuses = [
+        (await client.get(
+            "/v1/me/subscription",
+            headers={"Authorization": f"Bearer {account['access_token']}"},
+        )).json()
+        for account in accounts
+    ]
+    assert statuses[0]["telegram_linked"] is False
+    assert statuses[1]["telegram_linked"] is True
 
 
 async def test_expiring_lists_accounts_for_bot_reminders(auth_client: AsyncClient):

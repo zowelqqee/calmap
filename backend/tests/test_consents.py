@@ -7,28 +7,25 @@ import uuid
 from httpx import AsyncClient
 from sqlalchemy import text
 
-from tests.conftest import pay
+from tests.conftest import last_sms_code, new_phone, pay, sign_in
 from tests.test_api_flow import ONBOARDING_STEPS, complete_onboarding
 
 
-def _email() -> str:
-    return f"consent-{uuid.uuid4().hex[:10]}@example.com"
-
-
-async def test_registration_requires_the_separate_consent(client: AsyncClient):
-    refused = await client.post(
-        "/v1/auth/register", json={"email": _email(), "password": "correct-horse-battery"}
-    )
+async def test_first_sign_in_requires_the_separate_consent(client: AsyncClient):
+    phone = new_phone()
+    await client.post("/v1/auth/phone/code", json={"phone": phone})
+    code = last_sms_code(phone)
+    refused = await client.post("/v1/auth/phone/verify", json={"phone": phone, "code": code})
     assert refused.status_code == 422
     assert refused.json()["detail"] == "personal data consent is required"
 
+    # The code is not spent by the refusal: the user ticks the box and retries.
     accepted = await client.post(
-        "/v1/auth/register",
-        json={"email": _email(), "password": "correct-horse-battery",
-              "personal_data_consent": True},
+        "/v1/auth/phone/verify",
+        json={"phone": phone, "code": code, "personal_data_consent": True},
         headers={"User-Agent": "calmap-test/1.0"},
     )
-    assert accepted.status_code == 201
+    assert accepted.status_code == 200
     consents = await client.get(
         "/v1/me/consents",
         headers={"Authorization": f"Bearer {accepted.json()['access_token']}"},
@@ -37,6 +34,10 @@ async def test_registration_requires_the_separate_consent(client: AsyncClient):
     assert record["document"] == "personal_data"
     assert record["page"] == "consent"
     assert record["version"] == record["current_version"]
+
+    # Returning users are not asked again.
+    again = await sign_in(client, phone, consent=False)
+    assert again["access_token"]
 
 
 async def test_new_vk_account_requires_consent(client: AsyncClient):
@@ -62,12 +63,8 @@ async def test_foreign_sign_in_providers_are_not_offered(client: AsyncClient):
 
 
 async def test_health_data_needs_its_own_consent(client: AsyncClient):
-    registered = await client.post(
-        "/v1/auth/register",
-        json={"email": _email(), "password": "correct-horse-battery",
-              "personal_data_consent": True},
-    )
-    headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+    tokens = await sign_in(client)
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
     personal = ONBOARDING_STEPS[0][1]
     blocked = await client.patch("/v1/onboarding/personal", json=personal, headers=headers)
     assert blocked.status_code == 409
@@ -120,6 +117,12 @@ async def test_deletion_is_recorded_without_contact_data(auth_client: AsyncClien
         consents_left = await session.scalar(
             text("SELECT count(*) FROM user_consents WHERE user_id = :id"), {"id": user_id}
         )
+    async with SessionLocal() as session:
+        codes_left = await session.scalar(
+            text("SELECT count(*) FROM phone_codes WHERE phone = :phone"),
+            {"phone": auth_client.phone},
+        )
+    assert codes_left == 0
     assert row.reason == "user_request"
     assert "дневник питания" in row.categories
     assert consents_left == 0

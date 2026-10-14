@@ -37,10 +37,11 @@ def _warn_about_unfinished_configuration() -> None:
     ]
     if stubs:
         logger.warning("production is running with stub providers: %s", ", ".join(stubs))
-    if not settings.telegram_bot_username or not settings.telegram_bot_api_secret:
+    if settings.sms_provider == "stub":
+        logger.warning("SMS_PROVIDER is stub: users cannot receive sign-in codes")
+    if not settings.telegram_bot_api_secret:
         logger.warning(
-            "TELEGRAM_BOT_USERNAME / TELEGRAM_BOT_API_SECRET are not set: "
-            "users cannot pay and subscription status cannot be updated"
+            "TELEGRAM_BOT_API_SECRET is not set: subscription status cannot be updated"
         )
     if settings.assistant_provider != "stub" and not (
         settings.assistant_processor_name and settings.assistant_processor_country

@@ -111,10 +111,7 @@ class _ScriptedClient extends http.BaseClient {
 
 void main() {
   test('backend error details are shown in Russian', () {
-    expect(
-      humanizeApiError(401, 'invalid credentials'),
-      'Неверный email или пароль',
-    );
+    expect(humanizeApiError(401, 'invalid code'), 'Неверный код');
     expect(
       humanizeApiError(
         402,

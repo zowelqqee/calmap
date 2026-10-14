@@ -90,7 +90,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return status.isTrial
         ? 'Пробный период закончится через $left (${status.untilLabel})'
         : 'Подписка ${status.tier?.toUpperCase() ?? ''} закончится через $left '
-              '(${status.untilLabel})';
+              '(${status.untilLabel}). Продлите её заранее.';
   }
 
   static String _daysWord(int n) {
@@ -228,7 +228,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             Card(
               color: champagne.withValues(alpha: .35),
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(18, 16, 12, 12),
+                padding: const EdgeInsets.all(16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -244,14 +244,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                       ],
                     ),
-                    if (widget.subscription?.paymentAvailable ?? false)
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton(
-                          onPressed: () => openPaymentBot(context, widget.api),
-                          child: const Text('Оплатить в Telegram'),
-                        ),
-                      ),
                   ],
                 ),
               ),

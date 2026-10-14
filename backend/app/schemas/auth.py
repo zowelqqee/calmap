@@ -3,27 +3,25 @@ from __future__ import annotations
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field
 
 
-class RegisterRequest(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=8, max_length=72)
-    #: The separate consent to personal data processing (152-FZ art. 9).
+class PhoneCodeRequest(BaseModel):
+    phone: str = Field(min_length=10, max_length=20)
+
+
+class PhoneCodeOut(BaseModel):
+    #: Seconds until the code stops working / until another code may be requested.
+    expires_in: int
+    resend_in: int
+
+
+class PhoneVerifyRequest(BaseModel):
+    phone: str = Field(min_length=10, max_length=20)
+    code: str = Field(pattern=r"^\d{6}$")
+    #: The separate consent to personal data processing (152-FZ art. 9); required
+    #: when this sign-in creates the account.
     personal_data_consent: bool = False
-
-    @field_validator("password")
-    @classmethod
-    def fits_bcrypt(cls, value: str) -> str:
-        # bcrypt only accepts 72 bytes; Cyrillic characters take two bytes each.
-        if len(value.encode()) > 72:
-            raise ValueError("password is too long")
-        return value
-
-
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
 
 
 class OAuthRequest(BaseModel):
@@ -55,6 +53,7 @@ class RefreshRequest(BaseModel):
 class UserOut(BaseModel):
     id: uuid.UUID
     email: str | None
+    phone: str | None = None
     name: str | None
     avatar_url: str | None
     region_code: str

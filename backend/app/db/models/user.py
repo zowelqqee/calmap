@@ -33,6 +33,8 @@ class User(Base, UUIDPrimaryKey, Timestamped):
     __tablename__ = "users"
 
     email: Mapped[str | None] = mapped_column(String(320), unique=True, index=True)
+    #: Russian mobile number confirmed by SMS, normalised to 7XXXXXXXXXX.
+    phone: Mapped[str | None] = mapped_column(String(16), unique=True, index=True)
     name: Mapped[str | None] = mapped_column(String(120))
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     password_hash: Mapped[str | None] = mapped_column(String(128))
@@ -42,6 +44,19 @@ class User(Base, UUIDPrimaryKey, Timestamped):
 
     profile: Mapped[UserProfile | None] = relationship(back_populates="user", uselist=False)
     identities: Mapped[list[OAuthIdentity]] = relationship(back_populates="user")
+
+
+class PhoneCode(Base, UUIDPrimaryKey, Timestamped):
+    """One SMS sign-in code. Only an HMAC of the code is stored."""
+
+    __tablename__ = "phone_codes"
+
+    phone: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ip_address: Mapped[str | None] = mapped_column(String(45))
 
 
 class OAuthIdentity(Base, UUIDPrimaryKey, Timestamped):

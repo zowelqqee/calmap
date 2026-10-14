@@ -15,7 +15,18 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://localhost:5432/calmap"
 
-    # Per-IP attempts per minute on register/login/oauth/refresh; 0 disables.
+    # Sign-in by SMS code. stub keeps messages in memory (refused in production);
+    # smsru sends through SMS.ru.
+    sms_provider: Literal["stub", "smsru"] = "stub"
+    smsru_api_id: str = ""
+    sms_sender: str = ""
+    sms_daily_limit: int = 2000
+    phone_code_ttl_seconds: int = 300
+    phone_code_resend_seconds: int = 60
+    phone_code_max_attempts: int = 5
+    phone_codes_per_hour: int = 5
+
+    # Per-IP attempts per minute on sign-in endpoints; 0 disables.
     auth_rate_limit_per_minute: int = 20
 
     # Public legal pages (/legal/privacy, /legal/terms). The operator details are
@@ -69,11 +80,10 @@ class Settings(BaseSettings):
     assistant_model: str = "gpt-4o-mini"
 
     # Subscriptions. Payment happens in a Telegram bot, which pushes the status to
-    # /v1/bot/* authenticated with TELEGRAM_BOT_API_SECRET. The app reads it only.
+    # /v1/bot/* authenticated with TELEGRAM_BOT_API_SECRET. The app reads it only
+    # and does not link to the bot.
     trial_days: int = 3
-    telegram_bot_username: str = ""
     telegram_bot_api_secret: str = ""
-    telegram_link_code_ttl_minutes: int = 30
 
     # VK ID sign-in: tokens are verified by the user-info endpoint with our client_id.
     vk_userinfo_url: str = "https://id.vk.com/oauth2/user_info"

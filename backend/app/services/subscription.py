@@ -9,15 +9,13 @@ Everything the app may do is decided here, from `subscriptions` alone:
 
 from __future__ import annotations
 
-import hashlib
 import math
-import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -27,7 +25,6 @@ from app.db.models import (
     Subscription,
     SubscriptionEvent,
     TelegramLink,
-    TelegramLinkCode,
     User,
 )
 
@@ -129,47 +126,23 @@ async def load_subscription(session: AsyncSession, user: User) -> Subscription:
 # ----------------------------------------------------------------- Telegram linking
 
 
-def _hash_code(code: str) -> str:
-    return hashlib.sha256(code.encode()).hexdigest()
+async def link_telegram_by_phone(
+    session: AsyncSession, phone: str, telegram_user_id: int, telegram_username: str | None
+) -> User | None:
+    """Link the Telegram account to the app account with the same SMS-confirmed phone.
 
-
-async def create_link_code(session: AsyncSession, user_id: uuid.UUID) -> tuple[str, datetime]:
-    """Issue a one-time code for t.me/<bot>?start=<code>; older unused codes die."""
-    now = datetime.now(timezone.utc)
-    await session.execute(
-        update(TelegramLinkCode)
-        .where(TelegramLinkCode.user_id == user_id, TelegramLinkCode.used_at.is_(None))
-        .values(used_at=now)
-    )
-    # Telegram allows 1-64 characters [A-Za-z0-9_-] in a start parameter.
-    code = secrets.token_urlsafe(24)
-    expires_at = now + timedelta(minutes=settings.telegram_link_code_ttl_minutes)
-    session.add(TelegramLinkCode(user_id=user_id, code_hash=_hash_code(code), expires_at=expires_at))
-    await session.flush()
-    return code, expires_at
-
-
-async def redeem_link_code(
-    session: AsyncSession, code: str, telegram_user_id: int, telegram_username: str | None
-) -> uuid.UUID | None:
-    """Link the Telegram account to the code's owner. Returns the user id, or None
-    for an unknown, used or expired code. A Telegram account pays for one app account
-    at a time: linking it again moves the link."""
-    now = datetime.now(timezone.utc)
-    row = await session.scalar(
-        select(TelegramLinkCode)
-        .where(TelegramLinkCode.code_hash == _hash_code(code))
-        .with_for_update()
-    )
-    if row is None or row.used_at is not None or row.expires_at <= now:
+    The bot takes the number from Telegram's "share contact" button, which Telegram
+    confirms for the sender's own account. One Telegram account pays for one app
+    account; linking again moves the link. Returns None if no account has the phone.
+    """
+    user = await session.scalar(select(User).where(User.phone == phone))
+    if user is None:
         return None
-    row.used_at = now
-
     for stale in (
         await session.scalars(
             select(TelegramLink).where(
                 (TelegramLink.telegram_user_id == telegram_user_id)
-                | (TelegramLink.user_id == row.user_id)
+                | (TelegramLink.user_id == user.id)
             )
         )
     ).all():
@@ -177,13 +150,13 @@ async def redeem_link_code(
     await session.flush()
     session.add(
         TelegramLink(
-            user_id=row.user_id,
+            user_id=user.id,
             telegram_user_id=telegram_user_id,
             telegram_username=telegram_username,
         )
     )
     await session.flush()
-    return row.user_id
+    return user
 
 
 async def user_for_telegram(session: AsyncSession, telegram_user_id: int) -> User | None:

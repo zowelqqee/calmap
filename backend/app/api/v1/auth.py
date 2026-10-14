@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import uuid
+from datetime import datetime, timezone
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -9,33 +11,30 @@ from sqlalchemy import delete, select
 from app.api.deps import CurrentAccess, CurrentUser, DbSession
 from app.core.config import settings
 from app.core.rate_limit import limit_auth
-from app.core.security import (
-    create_access_token,
-    create_refresh_token,
-    DUMMY_PASSWORD_HASH,
-    decode_token,
-    hash_password,
-    verify_password,
-)
-from app.db.models import AccountDeletion, OAuthIdentity, User
+from app.core.security import create_access_token, create_refresh_token, decode_token
+from app.db.models import AccountDeletion, OAuthIdentity, PhoneCode, User
 from app.services.oauth import OAuthVerificationError, verify_oauth_token
 from app.services.consent import record_consent
+from app.services.phone_auth import PhoneAuthError, check_code, issue_code, normalize_phone
+from app.services.sms import SmsError
 from app.services.subscription import new_subscription
 from app.schemas.auth import (
-    LoginRequest,
     OAuthRequest,
+    PhoneCodeOut,
+    PhoneCodeRequest,
+    PhoneVerifyRequest,
+    ProfileUpdate,
     RefreshRequest,
-    RegisterRequest,
     TokenPair,
     UserOut,
-    ProfileUpdate,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 rate_limited = [Depends(limit_auth)]
 
 DESTROYED_CATEGORIES = [
-    "учётные данные",
+    "учётные данные (номер телефона, коды входа)",
     "анкета (пол, возраст, рост, вес, цели, аллергии, тип питания, бюджет)",
     "нормы питания",
     "рационы",
@@ -49,9 +48,9 @@ DESTROYED_CATEGORIES = [
     "журнал согласий",
 ]
 
-# Only Russian-owned sign-in: 149-FZ allows a Russian phone number, Gosuslugi,
-# the Unified Biometric System or a Russian information system; Google/Apple ID
-# sign-in is fined under art. 13.55 of the Administrative Code since 7 July 2026.
+# Sign-in only by methods 149-FZ permits: a Russian phone number (SMS code) or a
+# Russian information system (VK ID). Google/Apple ID sign-in is fined under
+# art. 13.55 of the Administrative Code since 7 July 2026.
 SUPPORTED_PROVIDERS = {"vk"}
 
 CONSENT_REQUIRED = "personal data consent is required"
@@ -63,41 +62,57 @@ def _tokens(user_id: uuid.UUID) -> TokenPair:
     )
 
 
-@router.post(
-    "/register",
-    response_model=TokenPair,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=rate_limited,
-)
-async def register(payload: RegisterRequest, request: Request, session: DbSession) -> TokenPair:
-    if not payload.personal_data_consent:
-        raise HTTPException(422, CONSENT_REQUIRED)
-    existing = await session.scalar(select(User).where(User.email == payload.email.lower()))
-    if existing is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "email already registered")
+@router.post("/phone/code", response_model=PhoneCodeOut, dependencies=rate_limited)
+async def send_phone_code(
+    payload: PhoneCodeRequest, request: Request, session: DbSession
+) -> PhoneCodeOut:
+    """Send a sign-in code by SMS to a Russian mobile number."""
+    phone = normalize_phone(payload.phone)
+    if phone is None:
+        raise HTTPException(422, "phone must be a Russian mobile number")
+    ip = request.client.host if request.client else None
+    try:
+        issued = await issue_code(session, phone, ip)
+    except PhoneAuthError as exc:
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+        raise HTTPException(exc.status, str(exc), headers=headers) from None
+    except SmsError:
+        logger.exception("SMS delivery failed")
+        raise HTTPException(503, "sms delivery failed") from None
+    # Commit before answering: the code must exist even if the client is fast.
+    await session.commit()
+    return PhoneCodeOut(expires_in=issued.expires_in, resend_in=issued.resend_in)
 
-    user = User(
-        email=payload.email.lower(),
-        password_hash=hash_password(payload.password),
-        region_code=settings.default_region_code,
-    )
-    session.add(user)
+
+@router.post("/phone/verify", response_model=TokenPair, dependencies=rate_limited)
+async def verify_phone_code(
+    payload: PhoneVerifyRequest, request: Request, session: DbSession
+) -> TokenPair:
+    """Exchange the SMS code for tokens. The first sign-in creates the account and
+    needs the separate personal-data consent; the code is not spent until then."""
+    phone = normalize_phone(payload.phone)
+    if phone is None:
+        raise HTTPException(422, "phone must be a Russian mobile number")
+    try:
+        code_row = await check_code(session, phone, payload.code)
+    except PhoneAuthError as exc:
+        # Count the failed attempt even though the request fails.
+        await session.commit()
+        raise HTTPException(exc.status, str(exc)) from None
+
+    user = await session.scalar(select(User).where(User.phone == phone))
+    if user is None:
+        if not payload.personal_data_consent:
+            raise HTTPException(422, CONSENT_REQUIRED)
+        user = User(phone=phone, region_code=settings.default_region_code)
+        session.add(user)
+        await session.flush()
+        session.add(new_subscription(user.id))
+        await record_consent(session, user.id, "personal_data", request)
+    elif not user.is_active:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
+    code_row.consumed_at = datetime.now(timezone.utc)
     await session.flush()
-    session.add(new_subscription(user.id))
-    await record_consent(session, user.id, "personal_data", request)
-    await session.flush()
-    return _tokens(user.id)
-
-
-@router.post("/login", response_model=TokenPair, dependencies=rate_limited)
-async def login(payload: LoginRequest, session: DbSession) -> TokenPair:
-    user = await session.scalar(select(User).where(User.email == payload.email.lower()))
-    # Same error and the same bcrypt cost for an unknown email and a wrong password:
-    # never leak which addresses exist.
-    password_hash = user.password_hash if user is not None and user.password_hash else None
-    valid = verify_password(payload.password, password_hash or DUMMY_PASSWORD_HASH)
-    if password_hash is None or not valid:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
     return _tokens(user.id)
 
 
@@ -162,6 +177,7 @@ async def me(user: CurrentUser, access: CurrentAccess) -> UserOut:
     return UserOut(
         id=user.id,
         email=user.email,
+        phone=user.phone,
         name=user.name,
         avatar_url=user.avatar_url,
         region_code=user.region_code,
@@ -183,6 +199,7 @@ async def update_me(
     return UserOut(
         id=user.id,
         email=user.email,
+        phone=user.phone,
         name=user.name,
         avatar_url=user.avatar_url,
         region_code=user.region_code,
@@ -210,6 +227,8 @@ async def delete_me(user: CurrentUser, session: DbSession) -> Response:
             categories=DESTROYED_CATEGORIES,
         )
     )
+    if user.phone:
+        await session.execute(delete(PhoneCode).where(PhoneCode.phone == user.phone))
     # A Core delete lets Postgres cascade; the ORM would instead try to null out
     # the loaded relationships first.
     await session.execute(delete(User).where(User.id == user.id))

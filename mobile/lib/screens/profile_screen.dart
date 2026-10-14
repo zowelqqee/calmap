@@ -219,14 +219,18 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
   }
 
+  String? _phoneLabel(dynamic raw) {
+    final n = raw?.toString() ?? '';
+    if (n.length != 11) return null;
+    return '+7 ${n.substring(1, 4)} ${n.substring(4, 7)}-'
+        '${n.substring(7, 9)}-${n.substring(9)}';
+  }
+
   String _subscriptionLabel() {
     final status = subscription;
     if (status == null) return '';
     if (!status.hasAccess) return status.blockedMessage;
-    final telegram = status.telegramLinked
-        ? 'Оплата привязана к Telegram.'
-        : 'Оплата проходит в Telegram-боте.';
-    return 'Действует до ${status.untilLabel}. $telegram';
+    return 'Действует до ${status.untilLabel}';
   }
 
   void _snack(String message) => ScaffoldMessenger.of(
@@ -268,7 +272,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                     ).textTheme.titleLarge?.copyWith(color: Colors.white),
                   ),
                   subtitle: Text(
-                    '${me?['email'] ?? 'Вход через внешний сервис'}\n$city',
+                    '${_phoneLabel(me?['phone']) ?? me?['email'] ?? 'Вход через VK ID'}\n$city',
                     style: TextStyle(
                       color: Colors.white.withValues(alpha: .62),
                     ),
@@ -337,18 +341,6 @@ class _ProfileScreenState extends State<ProfileScreen>
                       ),
                       const SizedBox(height: 6),
                       Text(_subscriptionLabel()),
-                      if (subscription?.paymentAvailable ?? false) ...[
-                        const SizedBox(height: 14),
-                        FilledButton.icon(
-                          onPressed: () => openPaymentBot(context, widget.api),
-                          icon: const Icon(Icons.send_rounded),
-                          label: Text(
-                            subscription?.state == 'active'
-                                ? 'Продлить в Telegram'
-                                : 'Оплатить в Telegram',
-                          ),
-                        ),
-                      ],
                     ],
                   ),
                 ),

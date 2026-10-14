@@ -4,29 +4,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
-import bcrypt
 import jwt
 
 from app.core.config import settings
 
 ALGORITHM = "HS256"
 TokenType = Literal["access", "refresh"]
-
-
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-
-
-#: Compared against when the email is unknown, so a failed login costs the same time
-#: whether or not the account exists.
-DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"calmap-timing-equaliser", bcrypt.gensalt()).decode()
-
-
-def verify_password(password: str, password_hash: str) -> bool:
-    try:
-        return bcrypt.checkpw(password.encode(), password_hash.encode())
-    except ValueError:
-        return False
 
 
 def _create_token(subject: str, token_type: TokenType, ttl: timedelta) -> str:

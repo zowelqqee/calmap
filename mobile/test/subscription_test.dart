@@ -101,7 +101,7 @@ void main() {
     expect(paywall, 1);
   });
 
-  testWidgets('paywall states the reason and offers Telegram payment', (
+  testWidgets('paywall states the reason without a payment link', (
     tester,
   ) async {
     var rechecks = 0;
@@ -115,7 +115,6 @@ void main() {
           status: SubscriptionStatus.fromJson({
             'state': 'trial_ended',
             'has_access': false,
-            'payment_available': true,
           }),
           onRecheck: () async {
             rechecks++;
@@ -126,13 +125,13 @@ void main() {
       ),
     );
     expect(find.text('Пробный период закончился'), findsOneWidget);
-    expect(find.text('Оплатить в Telegram'), findsOneWidget);
-    expect(find.text('BASE'), findsOneWidget);
-    expect(find.text('PRO'), findsOneWidget);
+    expect(find.textContaining('Продлите'), findsNothing);
+    expect(find.textContaining('Оформите подписку'), findsOneWidget);
+    expect(find.textContaining('Telegram'), findsNothing);
 
     await tester.tap(find.text('Обновить статус'));
     await tester.pumpAndSettle();
     expect(rechecks, 1);
-    expect(find.textContaining('Оплата пока не поступила'), findsOneWidget);
+    expect(find.text('Подписка пока не продлена'), findsOneWidget);
   });
 }

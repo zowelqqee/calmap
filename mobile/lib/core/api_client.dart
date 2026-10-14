@@ -48,9 +48,6 @@ String humanizeApiError(int statusCode, dynamic detail) {
   }
   final text = detail?.toString() ?? '';
   const known = <String, String>{
-    'invalid credentials': 'Неверный email или пароль',
-    'email already registered':
-        'Этот email уже зарегистрирован. Войдите в аккаунт',
     'token expired': 'Сессия истекла. Войдите снова',
     'invalid token': 'Сессия недействительна. Войдите снова',
     'invalid refresh token': 'Сессия истекла. Войдите снова',
@@ -72,6 +69,15 @@ String humanizeApiError(int statusCode, dynamic detail) {
     'AI consultation is temporarily unavailable':
         'AI-консультант временно недоступен. Попробуйте позже',
     'unsupported provider': 'Этот способ входа недоступен',
+    'phone must be a Russian mobile number':
+        'Введите российский мобильный номер',
+    'invalid code': 'Неверный код',
+    'code expired': 'Код устарел. Запросите новый',
+    'code was sent recently': 'Код уже отправлен. Подождите минуту',
+    'too many codes for this number':
+        'Слишком много кодов на этот номер. Попробуйте через час',
+    'sms limit reached': 'Отправка SMS временно недоступна. Попробуйте позже',
+    'sms delivery failed': 'Не удалось отправить SMS. Попробуйте позже',
     'personal data consent is required':
         'Для регистрации нужно согласие на обработку персональных данных',
   };
