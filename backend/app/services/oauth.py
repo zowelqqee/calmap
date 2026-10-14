@@ -44,10 +44,12 @@ async def _verify_vk(token: str) -> tuple[str, str | None]:
 
 async def verify_oauth_token(provider: str, id_token: str) -> tuple[str, str | None]:
     """Return a namespaced subject and trusted email, or raise a verification error."""
-    if id_token.startswith("test:") and settings.env != "production":
-        return f"{provider}:{id_token.removeprefix('test:')}", None
-    if settings.env == "production" and id_token.startswith("test:"):
-        raise OAuthVerificationError("test OAuth tokens are disabled in production")
+    if id_token.startswith("test:"):
+        # Local development only, and in a namespace of its own: real VK user ids
+        # are public, so "test:<id>" must never map onto a real account.
+        if settings.env != "local":
+            raise OAuthVerificationError("test OAuth tokens are disabled")
+        return f"{provider}test:{id_token.removeprefix('test:')}", None
     if provider != "vk":
         raise OAuthVerificationError("unsupported provider")
     subject, email = await _verify_vk(id_token)

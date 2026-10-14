@@ -156,7 +156,7 @@ class _CalmapAppState extends State<CalmapApp> with WidgetsBindingObserver {
   Future<void> _logout() async {
     _accessTimer?.cancel();
     subscription = null;
-    await api.clearSession();
+    await api.signOut();
     _goTo(AppStage.auth);
   }
 

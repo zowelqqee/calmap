@@ -46,6 +46,26 @@ class User(Base, UUIDPrimaryKey, Timestamped):
     identities: Mapped[list[OAuthIdentity]] = relationship(back_populates="user")
 
 
+class AuthSession(Base, UUIDPrimaryKey, Timestamped):
+    """One signed-in device. Tokens carry its id; revoking it signs the device out.
+
+    The refresh token rotates on every use: only the current one (or, for a short
+    grace period, the one before it, in case the answer was lost) is accepted. An
+    older one being presented means it was copied, and the session is revoked.
+    """
+
+    __tablename__ = "auth_sessions"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    refresh_jti: Mapped[str] = mapped_column(String(32), nullable=False)
+    previous_jti: Mapped[str | None] = mapped_column(String(32))
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class PhoneCode(Base, UUIDPrimaryKey, Timestamped):
     """One SMS sign-in code. Only an HMAC of the code is stored."""
 

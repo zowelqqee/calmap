@@ -10,19 +10,23 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
+import logging
 import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.models import PhoneCode
 from app.services.sms import get_sms_provider
 
-_RU_MOBILE = re.compile(r"^79\d{9}$")
+logger = logging.getLogger(__name__)
+
+_RU_MOBILE = re.compile(r"^79[0-9]{9}$")
 
 
 class PhoneAuthError(ValueError):
@@ -37,7 +41,9 @@ class PhoneAuthError(ValueError):
 def normalize_phone(raw: str) -> str | None:
     """+7 999 123-45-67, 8 (999) 123-45-67 or 9991234567 → 79991234567; None if the
     number is not a Russian mobile number."""
-    digits = re.sub(r"\D", "", raw)
+    # ASCII digits only: Unicode digits (٩, ９) would make distinct strings for one
+    # number and multiply the per-number limits.
+    digits = re.sub(r"[^0-9]", "", raw)
     if len(digits) == 10 and digits.startswith("9"):
         digits = "7" + digits
     elif len(digits) == 11 and digits.startswith("8"):
@@ -46,7 +52,25 @@ def normalize_phone(raw: str) -> str | None:
 
 
 def _hash(phone: str, code: str) -> str:
-    return hmac.new(settings.secret_key.encode(), f"{phone}:{code}".encode(), hashlib.sha256).hexdigest()
+    # A key derived for this purpose only, not the JWT signing key itself.
+    key = hmac.new(settings.secret_key.encode(), b"calmap:phone-code", hashlib.sha256).digest()
+    return hmac.new(key, f"{phone}:{code}".encode(), hashlib.sha256).hexdigest()
+
+
+def network_key(ip: str | None) -> str | None:
+    """The unit SMS limits are counted by: the IPv4 address or the IPv6 /64 network
+    (one subscriber usually holds a whole /64)."""
+    if not ip:
+        return None
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{address}/64", strict=False))
+    return str(address)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +80,13 @@ class IssuedCode:
 
 
 async def issue_code(session: AsyncSession, phone: str, ip: str | None) -> IssuedCode:
+    # Serialise requests for one number until the transaction ends, so parallel
+    # requests cannot all pass the limits below before any of them is recorded.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"sms:{phone}"}
+    )
     now = datetime.now(timezone.utc)
+    network = network_key(ip)
     last_sent = await session.scalar(
         select(func.max(PhoneCode.created_at)).where(PhoneCode.phone == phone)
     )
@@ -64,20 +94,50 @@ async def issue_code(session: AsyncSession, phone: str, ip: str | None) -> Issue
         wait = settings.phone_code_resend_seconds - int((now - last_sent).total_seconds())
         if wait > 0:
             raise PhoneAuthError(429, "code was sent recently", retry_after=wait)
+    hour_ago = now - timedelta(hours=1)
     sent_last_hour = await session.scalar(
         select(func.count())
         .select_from(PhoneCode)
-        .where(PhoneCode.phone == phone, PhoneCode.created_at > now - timedelta(hours=1))
+        .where(PhoneCode.phone == phone, PhoneCode.created_at > hour_ago)
     )
-    if (sent_last_hour or 0) >= settings.phone_codes_per_hour:
+    # Per (number, network): a stranger requesting codes for someone's number uses
+    # up their own allowance, not the owner's. The per-number total stays bounded.
+    from_network = await session.scalar(
+        select(func.count())
+        .select_from(PhoneCode)
+        .where(
+            PhoneCode.phone == phone,
+            PhoneCode.created_at > hour_ago,
+            PhoneCode.ip_address.is_not_distinct_from(network),
+        )
+    )
+    if (
+        (from_network or 0) >= settings.phone_codes_per_hour
+        or (sent_last_hour or 0) >= 2 * settings.phone_codes_per_hour
+    ):
         raise PhoneAuthError(429, "too many codes for this number", retry_after=3600)
+    if network is not None:
+        # Rotating numbers from one network must not drain the daily budget.
+        sent_from_network = await session.scalar(
+            select(func.count())
+            .select_from(PhoneCode)
+            .where(
+                PhoneCode.ip_address == network,
+                PhoneCode.created_at > now - timedelta(days=1),
+            )
+        )
+        if (sent_from_network or 0) >= settings.sms_per_network_daily:
+            raise PhoneAuthError(429, "too many codes from this network", retry_after=3600)
     sent_today = await session.scalar(
         select(func.count())
         .select_from(PhoneCode)
         .where(PhoneCode.created_at > now - timedelta(days=1))
     )
     if (sent_today or 0) >= settings.sms_daily_limit:
+        logger.error("daily SMS limit %s reached; phone sign-in is paused", settings.sms_daily_limit)
         raise PhoneAuthError(503, "sms limit reached")
+    if (sent_today or 0) == int(settings.sms_daily_limit * 0.8):
+        logger.warning("80%% of the daily SMS limit used (%s)", sent_today)
 
     # Codes hold a phone number: nothing older than a day is kept.
     await session.execute(delete(PhoneCode).where(PhoneCode.created_at < now - timedelta(days=1)))
@@ -93,7 +153,7 @@ async def issue_code(session: AsyncSession, phone: str, ip: str | None) -> Issue
             phone=phone,
             code_hash=_hash(phone, code),
             expires_at=now + timedelta(seconds=settings.phone_code_ttl_seconds),
-            ip_address=ip,
+            ip_address=network,
         )
     )
     await session.flush()

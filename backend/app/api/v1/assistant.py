@@ -87,10 +87,15 @@ async def chat(
         await require_consent(session, user.id, "ai_assistant")
     if limit <= 0:
         raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, "AI consultation requires the pro plan")
-    # Serialise this user's chat turns so parallel requests cannot all pass the quota.
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"assistant:{user.id}"}
+    # One chat turn per user at a time, so parallel requests cannot all pass the
+    # quota; a busy lock answers at once rather than holding a pooled connection.
+    locked = await session.scalar(
+        text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"), {"key": f"assistant:{user.id}"}
     )
+    if not locked:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS, "the previous message is still being answered"
+        )
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     used = await session.scalar(

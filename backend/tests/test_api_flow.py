@@ -701,10 +701,10 @@ async def test_account_deletion_removes_user_and_invalidates_tokens(auth_client:
 async def test_malformed_token_subject_is_401_not_500(client: AsyncClient):
     from app.core.security import create_access_token, create_refresh_token
 
-    client.headers["Authorization"] = f"Bearer {create_access_token('not-a-uuid')}"
+    client.headers["Authorization"] = f"Bearer {create_access_token('not-a-uuid', 'not-a-uuid')}"
     assert (await client.get("/v1/auth/me")).status_code == 401
     refreshed = await client.post(
-        "/v1/auth/refresh", json={"refresh_token": create_refresh_token("not-a-uuid")}
+        "/v1/auth/refresh", json={"refresh_token": create_refresh_token("not-a-uuid", "not-a-uuid", "x")}
     )
     assert refreshed.status_code == 401
 

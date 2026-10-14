@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 from dataclasses import asdict
@@ -7,6 +8,7 @@ from dataclasses import asdict
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import ActiveAccess, CurrentProfile, CurrentUser, DbSession
 from app.db.models import MealPlan, MealPlanDay, MealPlanItem, ProgressEntry, Recipe
@@ -28,6 +30,7 @@ from app.schemas.retail import RetailOfferOut, ShoppingOffersOut
 from app.services.retail import get_retail_provider
 from app.services.planning import current_targets, generate_meal_plan, shopping_list
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/meal-plans", tags=["meal-plans"])
 
 
@@ -242,8 +245,12 @@ async def get_shopping_offers(
     entries = await shopping_list(session, plan, user.region_code, day=day)
     try:
         offers = await get_retail_provider().offers(entries, user.region_code, plan.currency)
-    except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from None
+    except RuntimeError:
+        # The message can name configuration keys; it goes to the log only.
+        logger.exception("retail provider failed")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "shopping offers are temporarily unavailable"
+        ) from None
     return ShoppingOffersOut(
         plan_id=str(plan.id),
         region_code=user.region_code,
@@ -311,7 +318,7 @@ async def swap_item(
         excluded_allergens=catalogue_exclusions(profile.allergens),
         excluded_recipe_ids=frozenset({rejected}),
     )
-    new_day = build_day(candidates, request, locked=locked)
+    new_day = await run_in_threadpool(build_day, candidates, request, locked=locked)
     if not new_day.items:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "no replacement dish satisfies the constraints"

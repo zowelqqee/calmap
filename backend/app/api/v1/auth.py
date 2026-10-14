@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import datetime, timezone
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import delete, select
 
-from app.api.deps import CurrentAccess, CurrentUser, DbSession
+from app.api.deps import CurrentAccess, CurrentClaims, CurrentUser, DbSession
 from app.core.config import settings
 from app.core.rate_limit import limit_auth
-from app.core.security import create_access_token, create_refresh_token, decode_token
+from app.core.security import decode_token
 from app.db.models import AccountDeletion, OAuthIdentity, PhoneCode, User
+from app.services.auth_sessions import SessionRejected, revoke, revoke_all, rotate, start_session
 from app.services.oauth import OAuthVerificationError, verify_oauth_token
 from app.services.consent import record_consent
 from app.services.phone_auth import PhoneAuthError, check_code, issue_code, normalize_phone
@@ -55,11 +55,6 @@ SUPPORTED_PROVIDERS = {"vk"}
 
 CONSENT_REQUIRED = "personal data consent is required"
 
-
-def _tokens(user_id: uuid.UUID) -> TokenPair:
-    return TokenPair(
-        access_token=create_access_token(user_id), refresh_token=create_refresh_token(user_id)
-    )
 
 
 @router.post("/phone/code", response_model=PhoneCodeOut, dependencies=rate_limited)
@@ -113,7 +108,7 @@ async def verify_phone_code(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
     code_row.consumed_at = datetime.now(timezone.utc)
     await session.flush()
-    return _tokens(user.id)
+    return await start_session(session, user.id)
 
 
 @router.post("/oauth/{provider}", response_model=TokenPair, dependencies=rate_limited)
@@ -138,7 +133,7 @@ async def oauth(
         )
     )
     if identity is not None:
-        return _tokens(identity.user_id)
+        return await start_session(session, identity.user_id)
 
     user = None
     if email:
@@ -156,20 +151,33 @@ async def oauth(
         OAuthIdentity(user_id=user.id, provider=provider, subject=subject, email=email)
     )
     await session.flush()
-    return _tokens(user.id)
+    return await start_session(session, user.id)
 
 
 @router.post("/refresh", response_model=TokenPair, dependencies=rate_limited)
 async def refresh(payload: RefreshRequest, session: DbSession) -> TokenPair:
     try:
-        user_id = uuid.UUID(decode_token(payload.refresh_token, "refresh"))
+        claims = decode_token(payload.refresh_token, "refresh")
     except (jwt.InvalidTokenError, ValueError):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid refresh token") from None
 
-    user = await session.get(User, user_id)
+    user = await session.get(User, claims.user_id)
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
-    return _tokens(user.id)
+    try:
+        return await rotate(session, claims)
+    except SessionRejected:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid refresh token") from None
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(claims: CurrentClaims, session: DbSession, everywhere: bool = False) -> Response:
+    """End this device's session, or every session of the account (`?everywhere=true`)."""
+    if everywhere:
+        await revoke_all(session, claims.user_id)
+    else:
+        await revoke(session, claims.session_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/me", response_model=UserOut)

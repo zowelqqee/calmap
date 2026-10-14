@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from typing import Annotated
 
 import jwt
@@ -9,7 +8,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import decode_token
+from app.core.security import TokenClaims, decode_token
+from app.services.auth_sessions import is_active as session_is_active
 from app.db.models import Subscription, User, UserProfile
 from app.db.session import get_db
 from app.services.subscription import (
@@ -24,20 +24,29 @@ bearer_scheme = HTTPBearer(auto_error=False)
 DbSession = Annotated[AsyncSession, Depends(get_db)]
 
 
-async def get_current_user(
+async def get_token_claims(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     session: DbSession,
-) -> User:
+) -> TokenClaims:
     if credentials is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "missing bearer token")
     try:
-        user_id = uuid.UUID(decode_token(credentials.credentials, "access"))
+        claims = decode_token(credentials.credentials, "access")
     except jwt.ExpiredSignatureError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token expired") from None
     except (jwt.InvalidTokenError, ValueError):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token") from None
+    # A signed-out or revoked session stops working at once, not when the token expires.
+    if not await session_is_active(session, claims):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session ended")
+    return claims
 
-    user = await session.get(User, user_id)
+
+CurrentClaims = Annotated[TokenClaims, Depends(get_token_claims)]
+
+
+async def get_current_user(claims: CurrentClaims, session: DbSession) -> User:
+    user = await session.get(User, claims.user_id)
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
     return user

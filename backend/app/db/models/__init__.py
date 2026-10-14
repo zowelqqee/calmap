@@ -18,6 +18,7 @@ from app.db.models.subscription import (
     TelegramLink,
 )
 from app.db.models.user import (
+    AuthSession,
     OAuthIdentity,
     OnboardingDraft,
     PhoneCode,
@@ -32,6 +33,7 @@ __all__ = [
     "TIER_LIMITS",
     "AccountDeletion",
     "AssistantConversation",
+    "AuthSession",
     "AssistantMessage",
     "DiaryEntry",
     "FavoriteRecipe",

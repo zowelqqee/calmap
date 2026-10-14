@@ -65,11 +65,17 @@ async def recognize(
         )
 
     # --- per-tier quota: this is what keeps vision spend below subscription revenue ---
-    # Serialise this user's recognitions so parallel uploads cannot all pass the
-    # count before any of them is recorded. Released at transaction end.
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"vision:{user.id}"}
+    # One recognition per user at a time, so parallel uploads cannot all pass the
+    # count before any of them is recorded. A busy lock answers at once instead of
+    # queueing: each waiter would hold a pooled connection for the provider call.
+    # Released at transaction end.
+    locked = await session.scalar(
+        text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"), {"key": f"vision:{user.id}"}
     )
+    if not locked:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS, "another photo is being recognised"
+        )
     limit = access.limits["vision_per_day"]
     used = await session.scalar(
         select(func.count())

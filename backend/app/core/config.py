@@ -8,8 +8,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    env: Literal["local", "staging", "production"] = "local"
-    debug: bool = True
+    # Safe defaults: a .env without ENV/DEBUG runs as production (and fails fast on a
+    # weak secret) instead of silently enabling test sign-in, /docs and wildcard CORS.
+    env: Literal["local", "staging", "production"] = "production"
+    debug: bool = False
     secret_key: str = "dev-only-secret-key-do-not-use-in-production"
     cors_origins: str = ""
 
@@ -25,6 +27,10 @@ class Settings(BaseSettings):
     phone_code_resend_seconds: int = 60
     phone_code_max_attempts: int = 5
     phone_codes_per_hour: int = 5
+    #: Codes per day from one IPv4 address or IPv6 /64, across all numbers.
+    #: Mobile carriers put many subscribers behind one IPv4 address (CGNAT), so
+    #: this is a ceiling against pumping, not a per-person limit.
+    sms_per_network_daily: int = 100
 
     # Per-IP attempts per minute on sign-in endpoints; 0 disables.
     auth_rate_limit_per_minute: int = 20
@@ -115,7 +121,7 @@ class Settings(BaseSettings):
             if (
                 len(self.secret_key) < 32
                 or self.secret_key == "dev-only-secret-key-do-not-use-in-production"
-                or self.secret_key.startswith("replace-with-")
+                or self.secret_key.startswith(("replace-with-", "change-me"))
             ):
                 raise ValueError("SECRET_KEY must contain at least 32 characters in production")
             if self.telegram_bot_api_secret and len(self.telegram_bot_api_secret) < 32:

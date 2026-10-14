@@ -45,7 +45,7 @@ async def verify_bot(x_bot_secret: Annotated[str | None, Header()] = None) -> No
     if not secret:
         # Not configured: behave as if the API did not exist.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
-    if x_bot_secret is None or not hmac.compare_digest(x_bot_secret, secret):
+    if x_bot_secret is None or not hmac.compare_digest(x_bot_secret.encode(), secret.encode()):
         logger.warning("bot API call with an invalid secret")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid bot secret")
 

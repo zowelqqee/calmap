@@ -128,5 +128,5 @@ async def health() -> JSONResponse:
             content={"status": "degraded", "database": "unavailable", "version": APP_VERSION},
         )
     return JSONResponse(
-        content={"status": "ok", "env": settings.env, "database": "ok", "version": APP_VERSION}
+        content={"status": "ok", "database": "ok", "version": APP_VERSION}
     )

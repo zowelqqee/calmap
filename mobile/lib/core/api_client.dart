@@ -200,6 +200,25 @@ class ApiClient {
     await saveTokens(payload);
   }
 
+  /// Ends the session on the server (best effort: offline sign-out still works
+  /// locally), then forgets it on the device.
+  Future<void> signOut() async {
+    final token = _accessToken;
+    if (token != null) {
+      try {
+        await _client
+            .post(
+              Uri.parse('$baseUrl/v1/auth/logout'),
+              headers: {'Authorization': 'Bearer $token'},
+            )
+            .timeout(const Duration(seconds: 5));
+      } catch (_) {
+        // The refresh token still expires on its own.
+      }
+    }
+    await clearSession();
+  }
+
   Future<void> clearSession() async {
     _session++;
     _accessToken = null;

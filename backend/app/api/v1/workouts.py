@@ -93,11 +93,22 @@ async def update_workout_preferences(
     )
 
 
+#: Workouts are generated on request; a window keeps storage bounded.
+WORKOUT_WINDOW_DAYS = 400
+
+
+def _within_window(first: date, last: date) -> None:
+    today = date.today()
+    if (today - first).days > WORKOUT_WINDOW_DAYS or (last - today).days > WORKOUT_WINDOW_DAYS:
+        raise HTTPException(422, f"dates are limited to {WORKOUT_WINDOW_DAYS} days from today")
+
+
 @router.get("/today", response_model=WorkoutOut | None)
 async def today_workout(
     user: CurrentUser, profile: CurrentProfile, session: DbSession, day: date | None = None
 ) -> WorkoutOut | None:
     requested = day or date.today()
+    _within_window(requested, requested)
     await ensure_workouts(session, user.id, profile, requested, requested)
     workout = await session.scalar(
         select(Workout).where(Workout.user_id == user.id, Workout.day == requested)
@@ -112,6 +123,7 @@ async def workout_calendar(
 ) -> list[WorkoutCalendarDayOut]:
     if (date_to - date_from).days > 62:
         raise HTTPException(422, "range is limited to 63 days")
+    _within_window(date_from, date_to)
     await ensure_workouts(session, user.id, profile, date_from, date_to)
     rows = (await session.scalars(
         select(Workout).where(

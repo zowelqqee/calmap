@@ -8,6 +8,7 @@ from datetime import date, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.db.models import MealPlan, MealPlanDay, MealPlanItem, Recipe, User, UserProfile, UserTargets
 from app.domain.allergens import catalogue_exclusions
@@ -124,8 +125,9 @@ async def generate_meal_plan(
         excluded_recipe_ids=exclude_recipe_ids,
     )
     total_budget = _budget_for_period(profile, days)
-    day_plans = build_period(
-        candidates, request, days=days, total_budget=total_budget, options=options
+    # CPU-bound: run off the event loop so other requests keep being served.
+    day_plans = await run_in_threadpool(
+        build_period, candidates, request, days=days, total_budget=total_budget, options=options
     )
 
     return await persist_plan(

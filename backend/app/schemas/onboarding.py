@@ -65,8 +65,8 @@ class RestrictionsStep(BaseModel):
     """Step 3 — allergies and intolerances."""
 
     diet: DietType = DietType.OMNIVORE
-    allergens: list[str] = Field(default_factory=list)
-    excluded_product_ids: list[uuid.UUID] = Field(default_factory=list)
+    allergens: list[str] = Field(default_factory=list, max_length=50)
+    excluded_product_ids: list[uuid.UUID] = Field(default_factory=list, max_length=500)
 
     @field_validator("allergens")
     @classmethod

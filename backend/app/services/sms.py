@@ -62,7 +62,11 @@ class SmsRuProvider:
             for item in results.values()
         )
         if not delivered:
-            logger.error("SMS.ru refused a message: %s", body)
+            # The full answer echoes the phone number: log the codes only.
+            codes = [item.get("status_code") for item in results.values() if isinstance(item, dict)]
+            logger.error(
+                "SMS.ru refused a message: status=%s codes=%s", body.get("status_code"), codes
+            )
             raise SmsError("SMS.ru refused the message")
 
 

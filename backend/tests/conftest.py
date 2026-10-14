@@ -21,6 +21,8 @@ os.environ["SECRET_KEY"] = "test-secret-key-not-used-anywhere-else"
 os.environ["AUTH_RATE_LIMIT_PER_MINUTE"] = "0"
 # Tests sign the same number in repeatedly; the resend pause has its own test.
 os.environ["PHONE_CODE_RESEND_SECONDS"] = "0"
+# Every test client signs in from 127.0.0.1; the per-network cap has its own test.
+os.environ["SMS_PER_NETWORK_DAILY"] = "100000"
 os.environ["TELEGRAM_BOT_API_SECRET"] = "test-bot-secret-0123456789abcdef0123456789"
 BOT_HEADERS = {"X-Bot-Secret": os.environ["TELEGRAM_BOT_API_SECRET"]}
 

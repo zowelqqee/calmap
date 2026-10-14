@@ -159,4 +159,4 @@ class VisionConfirmItem(BaseModel):
 class VisionConfirmRequest(BaseModel):
     day: date
     meal_type: MealType
-    items: list[VisionConfirmItem]
+    items: list[VisionConfirmItem] = Field(max_length=30)
