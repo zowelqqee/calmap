@@ -36,6 +36,21 @@ services:
       - media_data:/app/media
       - ../data:/data:ro
 
+  bot:
+    build: ../bot
+    restart: unless-stopped
+    profiles: ["https", "bot"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
+      CALMAP_API_URL: http://backend:8000
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
   caddy:
     image: caddy:2.8-alpine
     restart: unless-stopped

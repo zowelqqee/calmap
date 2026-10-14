@@ -11,6 +11,11 @@
 	}
 	respond @bot_forbidden 404
 
+	# YooKassa notifications for the payment bot.
+	handle /yookassa/* {
+		reverse_proxy bot:8080
+	}
+
 	reverse_proxy backend:8000
 
 	header {

@@ -45,12 +45,48 @@ jobs:
         env:
           PGHOST: localhost
 
+  bot:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bot
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      PGUSER: postgres
+      PGHOST: localhost
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: bot/pyproject.toml
+      - name: Install
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e ".[dev]"
+      - name: Lint
+        run: .venv/bin/ruff check calmap_bot tests
+      - name: Test
+        run: .venv/bin/python -m pytest -q
+
   backend-image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build Docker image
-        run: docker build -t calmap-backend backend
+      - name: Build Docker images
+        run: |
+          docker build -t calmap-backend backend
+          docker build -t calmap-bot bot
 
   mobile:
     runs-on: ubuntu-latest

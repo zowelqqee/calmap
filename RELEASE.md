@@ -96,8 +96,16 @@ docker compose run --rm --entrypoint python backend \
 
 - [ ] SMS-вход: договор с SMS.ru, пополненный баланс, согласованное имя отправителя,
       `SMS_PROVIDER=smsru`. Без этого пользователи не смогут войти.
-- [ ] Telegram-бот оплаты подключён по контракту из INTEGRATIONS.md, раздел 1.
-      Без него после пробного периода продлить доступ нельзя.
+- [ ] Telegram-бот оплаты (`bot/`, запускается профилем `https`):
+      1. @BotFather → `/newbot`, токен в `BOT_TOKEN`; `YOOKASSA_RETURN_URL` =
+         `https://t.me/<имя_бота>`.
+      2. Магазин ЮKassa: `YOOKASSA_SHOP_ID`, `YOOKASSA_SECRET_KEY`; включить чеки
+         (54-ФЗ) и указать `YOOKASSA_VAT_CODE` по системе налогообложения.
+      3. ЮKassa → HTTP-уведомления: `https://<домен>/yookassa/webhook`, события
+         `payment.succeeded`, `payment.canceled`, `refund.succeeded`.
+      4. Проверка тестовым магазином ЮKassa: оплата → сообщение «Оплата получена»
+         → доступ в приложении.
+      Без бота после пробного периода продлить доступ нельзя.
 - [ ] Вход через VK ID: `VK_CLIENT_ID` на сервере и в сборке приложения (проверить
       на устройстве, см. INTEGRATIONS.md).
 - [ ] Распознавание фото и AI-консультант: ключи провайдеров. Без них пользователь

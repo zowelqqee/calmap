@@ -14,6 +14,7 @@
 | [RELEASE.md](RELEASE.md) | Пошаговый выпуск: сервер, HTTPS, сборка и публикация приложений |
 | [INTEGRATIONS.md](INTEGRATIONS.md) | API для Telegram-бота оплаты, вход через VK ID, распознавание, AI |
 | [mobile/README.md](mobile/README.md) | Сборка клиента, подпись, конфигурация |
+| [bot/README.md](bot/README.md) | Telegram-бот оплаты: сценарий, ЮKassa, настройка |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | Стороннее содержимое (анатомическая графика) |
 
 ## Локальный запуск
@@ -46,6 +47,7 @@ flutter run --dart-define-from-file=config/development.json
 ```bash
 cd backend && .venv/bin/ruff check app tests && .venv/bin/python -m pytest -q   # 120 тестов
 cd mobile && flutter analyze && flutter test                                    # 20 тестов + 4 golden (только macOS)
+cd bot && .venv/bin/ruff check calmap_bot tests && .venv/bin/python -m pytest -q # 17 тестов
 ```
 
 Тесты backend создают отдельную БД `calmap_test` и прогоняют те же миграции Alembic,
@@ -71,6 +73,7 @@ cd mobile && flutter analyze && flutter test                                    
 | `backend/app/services/vision/` | Распознавание: Gemini, OpenAI-совместимый API, stub |
 | `backend/app/seed/data.py` | Курируемый каталог: 69 продуктов, 73 рецепта |
 | `backend/docker-compose.yml` | PostgreSQL, backend, Caddy (HTTPS), ежедневный бэкап |
+| `bot/calmap_bot/` | Telegram-бот оплаты (aiogram 3, ЮKassa, чеки 54-ФЗ, напоминания) |
 | `mobile/lib/core/api_client.dart` | HTTP, обновление сессии, офлайн-кэш и очередь изменений |
 | `mobile/lib/screens/` | Экраны приложения |
 
@@ -119,7 +122,7 @@ Telegram-бот оплаты через `/v1/bot/*` (общий секрет). �
 | BASE | 5 | 7 | — |
 | PRO | 30 | 28 | 200 сообщений в месяц |
 
-Цены задаются в боте. Лимиты — в `backend/app/db/models/subscription.py`.
+Цены задаются в боте (`PRICE_BASE_RUB=299`, `PRICE_PRO_RUB=499` за 30 дней). Лимиты — в `backend/app/db/models/subscription.py`.
 Повторная отправка того же фото не списывает лимит.
 
 **Даты по Москве.** «Сегодня», дневные лимиты и даты планов считаются в
