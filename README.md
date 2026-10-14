@@ -46,8 +46,8 @@ flutter run --dart-define-from-file=config/development.json
 ## Проверки
 
 ```bash
-cd backend && .venv/bin/ruff check app tests && .venv/bin/python -m pytest -q   # 135 тестов
-cd mobile && flutter analyze && flutter test                                    # 22 теста + 4 golden (только macOS)
+cd backend && .venv/bin/ruff check app tests && .venv/bin/python -m pytest -q   # 138 тестов
+cd mobile && flutter analyze && flutter test                                    # 23 теста + 4 golden (только macOS)
 cd bot && .venv/bin/ruff check calmap_bot tests && .venv/bin/python -m pytest -q # 20 тестов
 ```
 

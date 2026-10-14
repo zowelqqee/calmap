@@ -105,6 +105,16 @@ async def sign_in(client: AsyncClient, phone: str | None = None, consent: bool =
     return {**response.json(), "phone": phone}
 
 
+async def delete_account(client: AsyncClient):
+    """Delete the signed-in account as the app does: SMS code, then DELETE."""
+    sent = await client.post("/v1/auth/me/deletion-code")
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["method"] == "sms"
+    return await client.request(
+        "DELETE", "/v1/auth/me", json={"code": last_sms_code(client.phone)}
+    )
+
+
 @pytest_asyncio.fixture
 async def auth_client(client: AsyncClient) -> AsyncClient:
     """A signed-in but not-yet-onboarded user who has given the personal-data and

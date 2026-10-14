@@ -14,7 +14,7 @@ from httpx import AsyncClient
 
 from sqlalchemy import text
 
-from tests.conftest import last_sms_code, new_phone, pay, sign_in
+from tests.conftest import delete_account, last_sms_code, new_phone, pay, sign_in
 
 ONBOARDING_STEPS = [
     ("personal", {"sex": "male", "birth_date": "1997-04-12", "height_cm": 182, "weight_kg": 84}),
@@ -693,7 +693,7 @@ async def test_account_deletion_removes_user_and_invalidates_tokens(auth_client:
     await complete_onboarding(auth_client)
     assert (await auth_client.get("/v1/auth/me")).status_code == 200
 
-    deleted = await auth_client.delete("/v1/auth/me")
+    deleted = await delete_account(auth_client)
     assert deleted.status_code == 204
     assert (await auth_client.get("/v1/auth/me")).status_code == 401
 

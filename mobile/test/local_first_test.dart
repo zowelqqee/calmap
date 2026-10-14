@@ -201,6 +201,35 @@ void main() {
     expect(store.queued, hasLength(1));
   });
 
+  test(
+    'account deletion sends the SMS code; a wrong code keeps the session',
+    () async {
+      final bodies = <String>[];
+      final api = ApiClient(
+        baseUrl: 'http://api.test',
+        client: _ScriptedClient((request) {
+          if (request.method != 'DELETE') return 200;
+          final body = (request as http.Request).body;
+          bodies.add(body);
+          return body.contains('123456') ? 204 : 403;
+        }),
+        localStore: _MemoryStore(),
+        storage: _MemorySecureStorage(),
+      );
+      await api.saveTokens({'access_token': 'a', 'refresh_token': 'r'});
+
+      await expectLater(
+        api.deleteAccount(code: '000000'),
+        throwsA(isA<ApiException>().having((e) => e.statusCode, 'status', 403)),
+      );
+      expect(api.hasSession, isTrue);
+
+      await api.deleteAccount(code: '123456');
+      expect(bodies.last, '{"code":"123456"}');
+      expect(api.hasSession, isFalse);
+    },
+  );
+
   test('an unrefreshable session signs the user out once', () async {
     final secure = _MemorySecureStorage();
     var expired = 0;

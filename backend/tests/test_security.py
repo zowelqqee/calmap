@@ -189,3 +189,101 @@ async def test_non_ascii_bot_secret_is_401_not_500(client: AsyncClient):
     )
     assert response.status_code == 401
     assert BOT_HEADERS  # the valid secret stays usable elsewhere
+
+
+# ---------------------------------------------------------- account deletion
+
+
+async def test_deletion_needs_the_sms_code(auth_client: AsyncClient):
+    from tests.conftest import last_sms_code
+
+    assert (await auth_client.delete("/v1/auth/me")).status_code == 403
+    sent = await auth_client.post("/v1/auth/me/deletion-code")
+    assert sent.status_code == 200
+    body = sent.json()
+    assert body["method"] == "sms"
+    assert body["phone_masked"].endswith(auth_client.phone[-2:])
+    assert "***" in body["phone_masked"]
+    assert "УДАЛЕНИЯ" in _last_sms(auth_client.phone)
+
+    code = last_sms_code(auth_client.phone)
+    wrong = "000000" if code != "000000" else "111111"
+    # A wrong code is 403, not 401: the app must not take it for an expired session.
+    refused = await auth_client.request("DELETE", "/v1/auth/me", json={"code": wrong})
+    assert refused.status_code == 403
+    assert (await auth_client.get("/v1/auth/me")).status_code == 200
+
+    deleted = await auth_client.request("DELETE", "/v1/auth/me", json={"code": code})
+    assert deleted.status_code == 204
+    assert (await auth_client.get("/v1/auth/me")).status_code == 401
+
+
+async def test_sign_in_and_deletion_codes_do_not_mix(client: AsyncClient):
+    from tests.conftest import last_sms_code
+
+    tokens = await sign_in(client)
+    phone = tokens["phone"]
+    headers = _bearer(tokens["access_token"])
+    # A fresh sign-in code cannot delete the account.
+    await client.post("/v1/auth/phone/code", json={"phone": phone})
+    sign_in_code = last_sms_code(phone)
+    refused = await client.request(
+        "DELETE", "/v1/auth/me", json={"code": sign_in_code}, headers=headers
+    )
+    assert refused.status_code == 403
+    # A deletion code cannot sign in, and requesting it keeps the sign-in code valid.
+    await client.post("/v1/auth/me/deletion-code", headers=headers)
+    deletion_code = last_sms_code(phone)
+    as_sign_in = await client.post(
+        "/v1/auth/phone/verify", json={"phone": phone, "code": deletion_code}
+    )
+    if deletion_code != sign_in_code:
+        assert as_sign_in.status_code == 401
+    still_valid = await client.post(
+        "/v1/auth/phone/verify", json={"phone": phone, "code": sign_in_code}
+    )
+    assert still_valid.status_code == 200
+
+
+async def test_account_without_phone_confirms_by_recent_sign_in(client: AsyncClient):
+    import uuid as uuid_module
+
+    from sqlalchemy import update
+
+    from app.core.security import decode_token
+    from app.db.models import AuthSession
+    from app.db.session import SessionLocal
+
+    async def vk_session() -> dict:
+        response = await client.post(
+            "/v1/auth/oauth/vk",
+            json={"id_token": f"test:{subject}", "personal_data_consent": True},
+        )
+        assert response.status_code == 200, response.text
+        return _bearer(response.json()["access_token"])
+
+    subject = uuid_module.uuid4().hex
+    old = await vk_session()
+    sent = await client.post("/v1/auth/me/deletion-code", headers=old)
+    assert sent.json() == {
+        "method": "recent_sign_in", "phone_masked": None, "expires_in": None, "resend_in": None
+    }
+    # Make that session older than the confirmation window.
+    async with SessionLocal() as session:
+        claims = decode_token(old["Authorization"].removeprefix("Bearer "), "access")
+        await session.execute(
+            update(AuthSession)
+            .where(AuthSession.id == claims.session_id)
+            .values(created_at=settings_now() - timedelta(hours=1))
+        )
+        await session.commit()
+    assert (await client.delete("/v1/auth/me", headers=old)).status_code == 403
+
+    fresh = await vk_session()
+    assert (await client.delete("/v1/auth/me", headers=fresh)).status_code == 204
+
+
+def _last_sms(phone: str) -> str:
+    from app.services.sms import get_sms_provider
+
+    return get_sms_provider().sent[normalize_phone(phone)]

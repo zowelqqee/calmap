@@ -7,7 +7,7 @@ import uuid
 from httpx import AsyncClient
 from sqlalchemy import text
 
-from tests.conftest import last_sms_code, new_phone, pay, sign_in
+from tests.conftest import delete_account, last_sms_code, new_phone, pay, sign_in
 from tests.test_api_flow import ONBOARDING_STEPS, complete_onboarding
 
 
@@ -106,7 +106,7 @@ async def test_deletion_is_recorded_without_contact_data(auth_client: AsyncClien
     from app.db.session import SessionLocal
 
     user_id = (await auth_client.get("/v1/auth/me")).json()["id"]
-    assert (await auth_client.delete("/v1/auth/me")).status_code == 204
+    assert (await delete_account(auth_client)).status_code == 204
     async with SessionLocal() as session:
         row = (
             await session.execute(

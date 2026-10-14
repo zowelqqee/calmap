@@ -82,6 +82,14 @@ async def is_active(session: AsyncSession, claims: TokenClaims) -> bool:
     )
 
 
+async def started_recently(session: AsyncSession, claims: TokenClaims, minutes: int) -> bool:
+    """Whether the session behind these claims was signed in within `minutes`."""
+    auth = await session.get(AuthSession, claims.session_id)
+    return auth is not None and datetime.now(timezone.utc) - auth.created_at < timedelta(
+        minutes=minutes
+    )
+
+
 async def revoke(session: AsyncSession, session_id: uuid.UUID) -> None:
     await session.execute(
         update(AuthSession)

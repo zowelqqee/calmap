@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
 from sqlalchemy import delete, select
 
 from app.api.deps import CurrentAccess, CurrentClaims, CurrentUser, DbSession
@@ -12,13 +12,22 @@ from app.core.config import settings
 from app.core.rate_limit import limit_auth
 from app.core.security import decode_token
 from app.db.models import AccountDeletion, OAuthIdentity, PhoneCode, User
-from app.services.auth_sessions import SessionRejected, revoke, revoke_all, rotate, start_session
+from app.services.auth_sessions import (
+    SessionRejected,
+    revoke,
+    revoke_all,
+    rotate,
+    start_session,
+    started_recently,
+)
 from app.services.oauth import OAuthVerificationError, verify_oauth_token
 from app.services.consent import record_consent
 from app.services.phone_auth import PhoneAuthError, check_code, issue_code, normalize_phone
 from app.services.sms import SmsError
 from app.services.subscription import new_subscription
 from app.schemas.auth import (
+    AccountDeletionRequest,
+    DeletionCodeOut,
     OAuthRequest,
     PhoneCodeOut,
     PhoneCodeRequest,
@@ -54,6 +63,8 @@ DESTROYED_CATEGORIES = [
 SUPPORTED_PROVIDERS = {"vk"}
 
 CONSENT_REQUIRED = "personal data consent is required"
+#: Accounts without a phone number confirm deletion by a fresh sign-in.
+RECENT_SIGN_IN_MINUTES = 10
 
 
 
@@ -216,15 +227,69 @@ async def update_me(
     )
 
 
+def _mask(phone: str) -> str:
+    """79991234567 → +7 999 ***-**-67"""
+    return f"+7 {phone[1:4]} ***-**-{phone[-2:]}"
+
+
+@router.post("/me/deletion-code", response_model=DeletionCodeOut, dependencies=rate_limited)
+async def send_deletion_code(
+    user: CurrentUser, request: Request, session: DbSession
+) -> DeletionCodeOut:
+    """Step 1 of account deletion: an SMS code to the account's phone number, so a
+    stolen session alone cannot destroy the account."""
+    if not user.phone:
+        return DeletionCodeOut(method="recent_sign_in")
+    ip = request.client.host if request.client else None
+    try:
+        issued = await issue_code(session, user.phone, ip, purpose="delete_account")
+    except PhoneAuthError as exc:
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+        raise HTTPException(exc.status, str(exc), headers=headers) from None
+    except SmsError:
+        logger.exception("SMS delivery failed")
+        raise HTTPException(503, "sms delivery failed") from None
+    await session.commit()
+    return DeletionCodeOut(
+        method="sms",
+        phone_masked=_mask(user.phone),
+        expires_in=issued.expires_in,
+        resend_in=issued.resend_in,
+    )
+
+
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_me(user: CurrentUser, session: DbSession) -> Response:
-    """Permanently delete the account and every record that belongs to it.
+async def delete_me(
+    user: CurrentUser,
+    claims: CurrentClaims,
+    session: DbSession,
+    payload: AccountDeletionRequest | None = Body(default=None),
+) -> Response:
+    """Step 2: permanently delete the account and every record that belongs to it.
+
+    Needs the SMS code from step 1; an account without a phone number (VK ID) needs
+    a session started in the last RECENT_SIGN_IN_MINUTES minutes instead. Refusals
+    answer 403, never 401: a wrong code must not look like an expired session.
 
     Required by the App Store and Google Play and by 152-FZ (withdrawal of consent).
     All user-owned tables reference `users.id` with ON DELETE CASCADE, so one delete
     removes the profile, diary, plans, progress, recognitions, chats and payments.
     Outstanding tokens stop working because their subject no longer exists.
     """
+    if user.phone:
+        code = payload.code if payload else None
+        if code is None:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "confirmation code required")
+        try:
+            code_row = await check_code(session, user.phone, code, purpose="delete_account")
+        except PhoneAuthError as exc:
+            # Keep the failed attempt even though the request fails.
+            await session.commit()
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from None
+        code_row.consumed_at = datetime.now(timezone.utc)
+    elif not await started_recently(session, claims, RECENT_SIGN_IN_MINUTES):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "recent sign-in required")
+
     # Destruction record (Roskomnadzor order No. 179): the former account id and
     # what was destroyed, without contact data.
     session.add(

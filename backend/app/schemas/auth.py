@@ -24,6 +24,21 @@ class PhoneVerifyRequest(BaseModel):
     personal_data_consent: bool = False
 
 
+class DeletionCodeOut(BaseModel):
+    """`method`: "sms" — a code was sent to `phone_masked`; "recent_sign_in" — the
+    account has no phone number, so deletion needs a sign-in made in the last
+    few minutes instead."""
+
+    method: Literal["sms", "recent_sign_in"]
+    phone_masked: str | None = None
+    expires_in: int | None = None
+    resend_in: int | None = None
+
+
+class AccountDeletionRequest(BaseModel):
+    code: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
+
+
 class OAuthRequest(BaseModel):
     """Identity-token exchange for Apple / Google / VK.
 

@@ -67,11 +67,16 @@ class AuthSession(Base, UUIDPrimaryKey, Timestamped):
 
 
 class PhoneCode(Base, UUIDPrimaryKey, Timestamped):
-    """One SMS sign-in code. Only an HMAC of the code is stored."""
+    """One SMS code: sign-in or confirmation of account deletion. Only an HMAC of
+    the code is stored."""
 
     __tablename__ = "phone_codes"
 
     phone: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    #: sign_in | delete_account — a code works only for what it was sent for.
+    purpose: Mapped[str] = mapped_column(
+        String(16), default="sign_in", server_default="sign_in", nullable=False
+    )
     code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

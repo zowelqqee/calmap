@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../core/api_client.dart';
 import '../core/city_catalog.dart';
@@ -180,12 +183,59 @@ class _ProfileScreenState extends State<ProfileScreen>
         ],
       ),
     );
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
+    final Map<String, dynamic> request;
+    try {
+      request = await widget.api.requestAccountDeletion();
+    } on ApiException catch (exception) {
+      if (mounted) _snack(exception.message);
+      return;
+    }
+    if (!mounted) return;
+    if (request['method'] == 'sms') {
+      final deleted = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => _DeletionCodeDialog(
+          api: widget.api,
+          phoneMasked: request['phone_masked'] as String? ?? '',
+          resendIn: (request['resend_in'] as num?)?.toInt() ?? 60,
+        ),
+      );
+      if (deleted == true) await widget.onLogout();
+      return;
+    }
+    // No phone number (VK ID): a sign-in made in the last minutes confirms.
     try {
       await widget.api.deleteAccount();
       await widget.onLogout();
     } on ApiException catch (exception) {
-      if (mounted) _snack(exception.message);
+      if (!mounted) return;
+      if (exception.statusCode != 403) {
+        _snack(exception.message);
+        return;
+      }
+      final signOut = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Подтвердите вход'),
+          content: const Text(
+            'Для удаления аккаунта войдите заново через VK ID и сразу повторите '
+            'удаление в профиле.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Отмена'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Войти заново'),
+            ),
+          ],
+        ),
+      );
+      if (signOut == true) await widget.onLogout();
     }
   }
 
@@ -412,6 +462,158 @@ class _ProfileScreenState extends State<ProfileScreen>
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Second step of account deletion: the code from the SMS sent to the account's
+/// number. A wrong code keeps the dialog open; success closes it with `true`.
+class _DeletionCodeDialog extends StatefulWidget {
+  const _DeletionCodeDialog({
+    required this.api,
+    required this.phoneMasked,
+    required this.resendIn,
+  });
+
+  final ApiClient api;
+  final String phoneMasked;
+  final int resendIn;
+
+  @override
+  State<_DeletionCodeDialog> createState() => _DeletionCodeDialogState();
+}
+
+class _DeletionCodeDialogState extends State<_DeletionCodeDialog> {
+  final code = TextEditingController();
+  bool loading = false;
+  String? error;
+  int resendIn = 0;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _startTimer(widget.resendIn);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    code.dispose();
+    super.dispose();
+  }
+
+  void _startTimer(int seconds) {
+    _timer?.cancel();
+    resendIn = seconds;
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || resendIn <= 1) {
+        timer.cancel();
+        if (mounted) setState(() => resendIn = 0);
+        return;
+      }
+      setState(() => resendIn -= 1);
+    });
+  }
+
+  Future<void> _resend() async {
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      final sent = await widget.api.requestAccountDeletion();
+      if (!mounted) return;
+      code.clear();
+      _startTimer((sent['resend_in'] as num?)?.toInt() ?? 60);
+    } on ApiException catch (exception) {
+      if (mounted) setState(() => error = exception.message);
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  Future<void> _delete() async {
+    if (code.text.length != 6 || loading) return;
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      await widget.api.deleteAccount(code: code.text);
+      if (mounted) Navigator.pop(context, true);
+    } on ApiException catch (exception) {
+      if (mounted) {
+        setState(() {
+          error = exception.message;
+          loading = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Код из SMS'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Отправили код подтверждения на ${widget.phoneMasked}. '
+            'После ввода кода аккаунт будет удалён без возможности восстановления.',
+          ),
+          const SizedBox(height: 16),
+          TextField(
+            controller: code,
+            autofocus: true,
+            enabled: !loading,
+            keyboardType: TextInputType.number,
+            autofillHints: const [AutofillHints.oneTimeCode],
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(6),
+            ],
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 24, letterSpacing: 6),
+            decoration: const InputDecoration(hintText: '••••••'),
+            onChanged: (_) => setState(() {}),
+            onSubmitted: (_) => _delete(),
+          ),
+          if (error != null) ...[
+            const SizedBox(height: 10),
+            Text(error!, style: const TextStyle(color: Colors.redAccent)),
+          ],
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              onPressed: loading || resendIn > 0 ? null : _resend,
+              child: Text(
+                resendIn > 0
+                    ? 'Новый код через $resendIn с'
+                    : 'Отправить снова',
+              ),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: loading ? null : () => Navigator.pop(context, false),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+          onPressed: loading || code.text.length != 6 ? null : _delete,
+          child: loading
+              ? const SizedBox.square(
+                  dimension: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Удалить аккаунт'),
+        ),
+      ],
     );
   }
 }

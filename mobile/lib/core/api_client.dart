@@ -85,6 +85,18 @@ String humanizeApiError(int statusCode, dynamic detail) {
     'sms delivery failed': 'Не удалось отправить SMS. Попробуйте позже',
     'personal data consent is required':
         'Для регистрации нужно согласие на обработку персональных данных',
+    'too many codes from this network':
+        'Слишком много запросов кодов из этой сети. Попробуйте позже',
+    'confirmation code required': 'Введите код из SMS',
+    'recent sign-in required':
+        'Для удаления войдите в аккаунт заново и сразу повторите удаление',
+    'session ended': 'Сессия завершена. Войдите снова',
+    'another photo is being recognised':
+        'Предыдущее фото ещё распознаётся. Подождите',
+    'the previous message is still being answered':
+        'AI-консультант ещё отвечает на предыдущее сообщение',
+    'shopping offers are temporarily unavailable':
+        'Предложения магазинов временно недоступны',
   };
   for (final entry in known.entries) {
     if (text.startsWith(entry.key)) return entry.value;
@@ -300,9 +312,19 @@ class ApiClient {
     return decoded is Map ? Map<String, dynamic>.from(decoded) : {};
   }
 
-  /// Permanently deletes the account on the server, then all local data.
-  Future<void> deleteAccount() async {
-    await _mutate('DELETE', '/v1/auth/me', null);
+  /// Step 1 of account deletion. `method` is "sms" (a code was sent to
+  /// `phone_masked`) or "recent_sign_in" (no phone: a fresh sign-in confirms).
+  Future<Map<String, dynamic>> requestAccountDeletion() =>
+      post('/v1/auth/me/deletion-code');
+
+  /// Step 2: permanently deletes the account on the server, then all local data.
+  /// [code] is the SMS code from [requestAccountDeletion].
+  Future<void> deleteAccount({String? code}) async {
+    await _mutate(
+      'DELETE',
+      '/v1/auth/me',
+      code == null ? null : {'code': code},
+    );
     await clearSession();
   }
 
@@ -515,7 +537,11 @@ class ApiClient {
     final response = await switch (method) {
       'POST' => _client.post(uri, headers: headers, body: jsonEncode(body)),
       'PATCH' => _client.patch(uri, headers: headers, body: jsonEncode(body)),
-      'DELETE' => _client.delete(uri, headers: headers),
+      'DELETE' => _client.delete(
+        uri,
+        headers: headers,
+        body: body == null ? null : jsonEncode(body),
+      ),
       _ => _client.get(uri, headers: headers),
     }.timeout(timeout);
     if (response.statusCode == 401 && retry && _refreshToken != null) {

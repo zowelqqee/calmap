@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from httpx import AsyncClient
 from sqlalchemy import text
 
-from tests.conftest import BOT_HEADERS, link_telegram, pay, sign_in
+from tests.conftest import BOT_HEADERS, delete_account, link_telegram, pay, sign_in
 from tests.test_api_flow import complete_onboarding
 
 
@@ -206,7 +206,7 @@ async def test_expiring_lists_accounts_for_bot_reminders(auth_client: AsyncClien
 
 async def test_account_deletion_removes_the_telegram_link(auth_client: AsyncClient):
     telegram_user_id = await pay(auth_client, "pro")
-    assert (await auth_client.delete("/v1/auth/me")).status_code == 204
+    assert (await delete_account(auth_client)).status_code == 204
     status = await auth_client.get(
         f"/v1/bot/subscription/{telegram_user_id}", headers=BOT_HEADERS
     )

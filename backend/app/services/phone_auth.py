@@ -16,6 +16,7 @@ import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -79,7 +80,20 @@ class IssuedCode:
     resend_in: int
 
 
-async def issue_code(session: AsyncSession, phone: str, ip: str | None) -> IssuedCode:
+Purpose = Literal["sign_in", "delete_account"]
+
+MESSAGES: dict[str, str] = {
+    "sign_in": "Calmap: код входа {code}. Никому его не сообщайте.",
+    "delete_account": (
+        "Calmap: код для УДАЛЕНИЯ аккаунта {code}. Если вы не удаляете аккаунт, "
+        "никому его не сообщайте."
+    ),
+}
+
+
+async def issue_code(
+    session: AsyncSession, phone: str, ip: str | None, purpose: Purpose = "sign_in"
+) -> IssuedCode:
     # Serialise requests for one number until the transaction ends, so parallel
     # requests cannot all pass the limits below before any of them is recorded.
     await session.execute(
@@ -141,35 +155,46 @@ async def issue_code(session: AsyncSession, phone: str, ip: str | None) -> Issue
 
     # Codes hold a phone number: nothing older than a day is kept.
     await session.execute(delete(PhoneCode).where(PhoneCode.created_at < now - timedelta(days=1)))
-    # Earlier unused codes for this number stop working.
+    # Earlier unused codes for this number and purpose stop working.
     await session.execute(
         update(PhoneCode)
-        .where(PhoneCode.phone == phone, PhoneCode.consumed_at.is_(None))
+        .where(
+            PhoneCode.phone == phone,
+            PhoneCode.purpose == purpose,
+            PhoneCode.consumed_at.is_(None),
+        )
         .values(consumed_at=now)
     )
     code = f"{secrets.randbelow(1_000_000):06d}"
     session.add(
         PhoneCode(
             phone=phone,
+            purpose=purpose,
             code_hash=_hash(phone, code),
             expires_at=now + timedelta(seconds=settings.phone_code_ttl_seconds),
             ip_address=network,
         )
     )
     await session.flush()
-    await get_sms_provider().send(phone, f"Calmap: код входа {code}. Никому его не сообщайте.", ip)
+    await get_sms_provider().send(phone, MESSAGES[purpose].format(code=code), ip)
     return IssuedCode(
         expires_in=settings.phone_code_ttl_seconds,
         resend_in=settings.phone_code_resend_seconds,
     )
 
 
-async def check_code(session: AsyncSession, phone: str, code: str) -> PhoneCode:
-    """Validate without consuming; the caller consumes after the sign-in succeeds."""
+async def check_code(
+    session: AsyncSession, phone: str, code: str, purpose: Purpose = "sign_in"
+) -> PhoneCode:
+    """Validate without consuming; the caller consumes after the action succeeds."""
     now = datetime.now(timezone.utc)
     row = await session.scalar(
         select(PhoneCode)
-        .where(PhoneCode.phone == phone, PhoneCode.consumed_at.is_(None))
+        .where(
+            PhoneCode.phone == phone,
+            PhoneCode.purpose == purpose,
+            PhoneCode.consumed_at.is_(None),
+        )
         .order_by(PhoneCode.created_at.desc())
         .limit(1)
         .with_for_update()
