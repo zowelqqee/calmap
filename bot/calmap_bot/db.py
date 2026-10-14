@@ -32,6 +32,8 @@ class BotUser(Base):
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     #: 7XXXXXXXXXX; needed for the 54-FZ receipt contact.
     phone: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: The Calmap account this Telegram user is linked to (from /v1/bot/link).
+    calmap_user_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     linked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -50,6 +52,8 @@ class Payment(Base):
     id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     yookassa_payment_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     telegram_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    #: Account the payment was made for; events are refused for any other account.
+    calmap_user_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
     tier: Mapped[str] = mapped_column(String(16), nullable=False)
     days: Mapped[int] = mapped_column(Integer, nullable=False)
     amount_rub: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
@@ -63,6 +67,8 @@ class Payment(Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     paid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivery_error: Mapped[str | None] = mapped_column(String(255))
+    delivery_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

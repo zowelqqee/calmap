@@ -27,13 +27,18 @@ class ApiException implements Exception {
 /// to a local backend.
 String configuredBaseUrl() {
   const configured = String.fromEnvironment('API_BASE_URL');
-  if (configured.isNotEmpty) return configured;
   if (kReleaseMode) {
-    throw StateError(
-      'API_BASE_URL is not set: build with --dart-define-from-file=config/production.json',
-    );
+    // Android's usesCleartextTraffic and iOS ATS do not govern dart:io sockets,
+    // so a release build refuses anything but HTTPS itself.
+    if (Uri.tryParse(configured)?.scheme != 'https') {
+      throw StateError(
+        'API_BASE_URL must be an https:// URL in release builds '
+        '(--dart-define-from-file=config/production.json)',
+      );
+    }
+    return configured;
   }
-  return 'http://localhost:8000';
+  return configured.isNotEmpty ? configured : 'http://localhost:8000';
 }
 
 /// Russian text for the backend's machine-oriented error details.
@@ -128,11 +133,15 @@ class ApiClient {
        _client = client ?? http.Client(),
        _localStore = localStore ?? LocalStore();
 
-  /// The macOS data protection keychain refuses every write from a build that
-  /// is not signed with a developer team, which on the desktop build left the
-  /// session — and the intro screen's own "Начать" — silently stuck.  The
-  /// legacy file-based keychain has no such requirement and is ignored by iOS.
+  /// iOS: tokens stay on this device — not migrated through backups — and are
+  /// readable after the first unlock (needed for requests from the background).
+  /// macOS: the data protection keychain refuses every write from a build that
+  /// is not signed with a developer team, so the desktop development build uses
+  /// the legacy keychain.
   static const _defaultStorage = FlutterSecureStorage(
+    iOptions: IOSOptions(
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+    ),
     mOptions: MacOsOptions(usesDataProtectionKeychain: false),
   );
 
@@ -157,8 +166,19 @@ class ApiClient {
   String? _accessToken;
   String? _refreshToken;
 
+  /// Changes whenever the signed-in session starts or ends. Responses and queued
+  /// changes that belong to an older session are dropped instead of being cached
+  /// or replayed into the next user's account.
+  int _session = 0;
+
   Future<void> restore() async {
     await _localStore.open();
+    // The keychain survives an app reinstall; the app's files do not. A missing
+    // install marker therefore means a fresh install: forget stale tokens.
+    if (await _localStore.isFirstLaunch()) {
+      await _storage.deleteAll();
+      await _localStore.markLaunched();
+    }
     _accessToken = await _storage.read(key: 'access_token');
     _refreshToken = await _storage.read(key: 'refresh_token');
   }
@@ -172,7 +192,16 @@ class ApiClient {
     await _storage.write(key: 'refresh_token', value: _refreshToken);
   }
 
+  /// Tokens from a successful sign-in: whatever is cached locally belongs to an
+  /// earlier session and is discarded first.
+  Future<void> startSession(Map<String, dynamic> payload) async {
+    _session++;
+    await _localStore.clear();
+    await saveTokens(payload);
+  }
+
   Future<void> clearSession() async {
+    _session++;
     _accessToken = null;
     _refreshToken = null;
     await _storage.delete(key: 'access_token');
@@ -317,6 +346,7 @@ class ApiClient {
   }
 
   Future<dynamic> _getDecoded(String path, {Map<String, String>? query}) async {
+    final session = _session;
     await _flushOutbox();
     var uri = Uri.parse('$baseUrl$path');
     if (query != null) uri = uri.replace(queryParameters: query);
@@ -324,7 +354,9 @@ class ApiClient {
     try {
       final response = await _send('GET', uri, null, retry: true);
       final decoded = _decode(response);
-      if (_cacheable(path)) await _localStore.writeResponse(cacheKey, decoded);
+      if (_cacheable(path) && session == _session) {
+        await _localStore.writeResponse(cacheKey, decoded);
+      }
       return decoded;
     } catch (error) {
       if (_isConnectivityError(error)) {
@@ -343,6 +375,7 @@ class ApiClient {
     String path,
     Map<String, dynamic>? body,
   ) async {
+    final session = _session;
     await _flushOutbox();
     try {
       final response = await _send(
@@ -360,7 +393,7 @@ class ApiClient {
       );
     } catch (error) {
       if (_isConnectivityError(error)) {
-        if (_queueableMutation(method, path)) {
+        if (_queueableMutation(method, path) && session == _session) {
           await _localStore.enqueue(method: method, path: path, body: body);
           throw ApiException(
             0,
@@ -382,8 +415,11 @@ class ApiClient {
   Future<void> _flushOutbox() async {
     if (_flushingOutbox || _accessToken == null) return;
     _flushingOutbox = true;
+    final session = _session;
     try {
       for (final item in await _localStore.outbox) {
+        // Signed out or switched account mid-flush: the rest is not ours to send.
+        if (session != _session) break;
         try {
           final method = item['method'] as String;
           final path = item['path'] as String;
@@ -534,6 +570,8 @@ class ApiClient {
   /// loopback points to the phone itself, so rewrite only those URLs to the
   /// API host compiled into this build.
   dynamic _normalizeLocalUrls(dynamic value) {
+    // Release builds talk to an HTTPS API and never receive loopback URLs.
+    if (kReleaseMode) return value;
     if (value is List) {
       return value.map(_normalizeLocalUrls).toList();
     }
@@ -546,7 +584,8 @@ class ApiClient {
     if (value is String &&
         (value.startsWith('http://127.0.0.1:8000') ||
             value.startsWith('http://localhost:8000'))) {
-      final uri = Uri.parse(value);
+      final uri = Uri.tryParse(value);
+      if (uri == null) return value;
       return '$baseUrl${uri.path}${uri.hasQuery ? '?${uri.query}' : ''}';
     }
     return value;

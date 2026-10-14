@@ -6,6 +6,7 @@ import logging
 import re
 
 from aiogram import F, Router
+from aiogram.enums import ChatType
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
@@ -38,6 +39,10 @@ def normalize_phone(raw: str) -> str | None:
 
 def build_router(settings: Settings, db: Database, backend: CalmapBackend, billing: Billing) -> Router:
     router = Router()
+    # Payments and phone numbers belong in a private chat only: in a group, a
+    # payment link or a subscription status would be visible to everyone.
+    router.message.filter(F.chat.type == ChatType.PRIVATE)
+    router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
     base = settings.public_base_url.rstrip("/")
     terms_url = f"{base}/legal/terms"
     privacy_url = f"{base}/legal/privacy"
@@ -91,8 +96,14 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
 
     @router.message(F.contact)
     async def contact(message: Message) -> None:
-        # Only the sender's own contact proves the number belongs to them.
-        if message.contact.user_id != message.from_user.id:
+        # Only the sender's own contact, shared with the button, proves the number
+        # belongs to them; a forwarded message keeps the original contact.user_id.
+        forwarded = (
+            message.forward_origin is not None
+            or message.via_bot is not None
+            or bool(message.is_automatic_forward)
+        )
+        if forwarded or message.contact.user_id != message.from_user.id:
             await message.answer(texts.NOT_YOUR_CONTACT, reply_markup=share_keyboard)
             return
         phone = normalize_phone(message.contact.phone_number)
@@ -100,7 +111,7 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
             await message.answer(texts.ACCOUNT_NOT_FOUND, reply_markup=share_keyboard)
             return
         try:
-            state = await backend.link(phone, message.from_user.id, message.from_user.username)
+            linked = await backend.link(phone, message.from_user.id, message.from_user.username)
         except NotLinked:
             await message.answer(texts.ACCOUNT_NOT_FOUND, reply_markup=share_keyboard)
             return
@@ -108,8 +119,14 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
             await message.answer(texts.SERVICE_UNAVAILABLE)
             return
         async with db.session() as session:
-            await session.merge(BotUser(telegram_user_id=message.from_user.id, phone=phone))
-        await message.answer(texts.status(state), reply_markup=ReplyKeyboardRemove())
+            await session.merge(
+                BotUser(
+                    telegram_user_id=message.from_user.id,
+                    phone=phone,
+                    calmap_user_id=linked.user_id,
+                )
+            )
+        await message.answer(texts.status(linked.subscription), reply_markup=ReplyKeyboardRemove())
         await message.answer("Выберите тариф:", reply_markup=tariffs_keyboard())
 
     @router.message(Command("pay"))
@@ -137,6 +154,12 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
 
     @router.message(Command("forget"))
     async def forget_me(message: Message) -> None:
+        try:
+            # The backend keeps the Telegram ID for payments and reminders; drop it.
+            await backend.unlink(message.from_user.id)
+        except BackendError:
+            await message.answer(texts.SERVICE_UNAVAILABLE)
+            return
         await forget(message.from_user.id)
         await message.answer(texts.FORGOTTEN, reply_markup=ReplyKeyboardRemove())
 
@@ -180,16 +203,27 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
         try:
             url = await billing.start_checkout(callback.from_user.id, tier)
         except CheckoutRefused as exc:
-            message = (
-                texts.ALREADY_PAID_FAR_AHEAD if "far ahead" in str(exc) else texts.NEED_LINK
-            )
+            reason = str(exc)
+            if "far ahead" in reason:
+                message = texts.ALREADY_PAID_FAR_AHEAD
+            elif "too many" in reason:
+                message = texts.TOO_MANY_CHECKOUTS
+            elif "not linked" in reason:
+                message = texts.NEED_LINK
+            else:
+                message = texts.SERVICE_UNAVAILABLE
             await callback.answer(message, show_alert=True)
             return
-        except (YooKassaError, BackendError, NotLinked):
+        except NotLinked:
+            await callback.answer(texts.NEED_LINK, show_alert=True)
+            return
+        except (YooKassaError, BackendError):
             logger.exception("checkout failed")
             await callback.answer(texts.SERVICE_UNAVAILABLE, show_alert=True)
             return
-        await callback.message.answer(
+        # Sent to the payer directly, never to whatever chat holds the button.
+        await callback.bot.send_message(
+            callback.from_user.id,
             texts.payment_link(tariff),
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text=texts.GO_TO_PAYMENT, url=url)]]

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.api.deps import DbSession
 from app.api.v1.subscription import subscription_out
@@ -74,6 +74,10 @@ async def subscription_event(payload: BotSubscriptionEvent, session: DbSession) 
     user = await user_for_telegram(session, payload.telegram_user_id)
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "telegram account is not linked")
+    if payload.user_id is not None and payload.user_id != user.id:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "telegram account is linked to another Calmap account"
+        )
     processed = await apply_bot_event(
         session,
         user,
@@ -89,6 +93,14 @@ async def subscription_event(payload: BotSubscriptionEvent, session: DbSession) 
     subscription = await load_subscription(session, user)
     return BotEventOut(
         processed=processed, subscription=await subscription_out(session, subscription)
+    )
+
+
+@router.delete("/link/{telegram_user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def unlink(telegram_user_id: int, session: DbSession) -> None:
+    """The user asked the bot to forget them (/forget)."""
+    await session.execute(
+        delete(TelegramLink).where(TelegramLink.telegram_user_id == telegram_user_id)
     )
 
 

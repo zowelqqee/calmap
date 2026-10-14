@@ -114,7 +114,7 @@ class _AuthScreenState extends State<AuthScreen> {
         'code': code.text,
         'personal_data_consent': personalDataConsent,
       });
-      await widget.api.saveTokens(tokens);
+      await widget.api.startSession(tokens);
       await widget.onAuthenticated();
     } on ApiException catch (exception) {
       if (!mounted) return;
@@ -143,7 +143,7 @@ class _AuthScreenState extends State<AuthScreen> {
         'id_token': credential.token,
         'personal_data_consent': personalDataConsent,
       });
-      await widget.api.saveTokens(tokens);
+      await widget.api.startSession(tokens);
       await widget.onAuthenticated();
     } on ApiException catch (exception) {
       if (mounted) {

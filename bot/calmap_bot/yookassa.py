@@ -6,12 +6,17 @@ notification only names a payment or refund, which is then read from the API.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 
 import httpx
 
 API_URL = "https://api.yookassa.ru/v3"
+
+#: YooKassa payment and refund ids are 36-character UUID-like strings. Anything
+#: else from a notification is refused before it is put into an API path.
+OBJECT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 class YooKassaError(RuntimeError):
@@ -30,7 +35,7 @@ class YooPayment:
     amount: Decimal
     currency: str
     confirmation_url: str | None
-    metadata: dict
+    refunded: Decimal
 
     @classmethod
     def from_json(cls, data: dict) -> YooPayment:
@@ -41,7 +46,7 @@ class YooPayment:
             amount=Decimal(data["amount"]["value"]),
             currency=data["amount"]["currency"],
             confirmation_url=(data.get("confirmation") or {}).get("confirmation_url"),
-            metadata=data.get("metadata") or {},
+            refunded=Decimal((data.get("refunded_amount") or {}).get("value", "0")),
         )
 
 

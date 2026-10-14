@@ -96,6 +96,8 @@ async def run() -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # httpx logs every request URL at INFO; those carry Telegram user IDs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     asyncio.run(run())
 
 

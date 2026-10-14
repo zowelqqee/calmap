@@ -92,6 +92,7 @@ def payment_link(tariff: Tariff) -> str:
 
 GO_TO_PAYMENT = "Перейти к оплате"
 ALREADY_PAID_FAR_AHEAD = "Подписка уже оплачена более чем на год вперёд."
+TOO_MANY_CHECKOUTS = "Слишком много счетов за последний час. Попробуйте позже."
 
 
 def paid(state: SubscriptionState) -> str:

@@ -53,6 +53,8 @@ class Settings(BaseSettings):
             "TELEGRAM_BOT_API_SECRET": self.telegram_bot_api_secret,
             "YOOKASSA_SHOP_ID": self.yookassa_shop_id,
             "YOOKASSA_SECRET_KEY": self.yookassa_secret_key,
+            # Links to the terms and the privacy policy must be valid.
+            "PUBLIC_BASE_URL": self.public_base_url.startswith("https://"),
         }
         return [name for name, value in required.items() if not value]
 

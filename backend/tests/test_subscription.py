@@ -211,3 +211,27 @@ async def test_account_deletion_removes_the_telegram_link(auth_client: AsyncClie
         f"/v1/bot/subscription/{telegram_user_id}", headers=BOT_HEADERS
     )
     assert status.status_code == 404
+
+
+async def test_event_for_another_account_is_refused(auth_client: AsyncClient):
+    telegram_user_id = await link_telegram(auth_client)
+    wrong = await auth_client.post(
+        "/v1/bot/subscription/events",
+        json=_event(telegram_user_id, user_id=str(uuid.uuid4())),
+        headers=BOT_HEADERS,
+    )
+    assert wrong.status_code == 409
+    me = (await auth_client.get("/v1/auth/me")).json()["id"]
+    right = await auth_client.post(
+        "/v1/bot/subscription/events",
+        json=_event(telegram_user_id, user_id=me),
+        headers=BOT_HEADERS,
+    )
+    assert right.status_code == 200
+
+
+async def test_bot_can_unlink_on_request(auth_client: AsyncClient):
+    telegram_user_id = await link_telegram(auth_client)
+    response = await auth_client.delete(f"/v1/bot/link/{telegram_user_id}", headers=BOT_HEADERS)
+    assert response.status_code == 204
+    assert (await auth_client.get("/v1/me/subscription")).json()["telegram_linked"] is False

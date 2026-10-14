@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
 
 from calmap_bot.backend import SubscriptionState
-from calmap_bot.billing import CheckoutRefused, compute_paid_until
+from calmap_bot.billing import CHECKOUTS_PER_HOUR, CheckoutRefused, compute_paid_until
 from calmap_bot.db import Payment, PaymentStatus
 from calmap_bot.tariffs import Tariff
 
@@ -106,7 +107,13 @@ async def test_backend_outage_is_retried_with_the_same_period(env, linked_user):
     stored = await _record(env, linked_user)
     assert stored.delivered_at is None and stored.paid_until is not None
 
+    assert stored.delivery_attempts == 1 and stored.next_attempt_at > datetime.now(timezone.utc)
+    # Backoff: the record is not retried before its time.
     env.backend.fail_events = False
+    await env.billing.reconcile()
+    assert (await _record(env, linked_user)).delivered_at is None
+    async with env.db.session() as session:
+        (await session.get(Payment, stored.id)).next_attempt_at = None
     await env.billing.reconcile()
     delivered = await _record(env, linked_user)
     assert delivered.delivered_at is not None
@@ -131,7 +138,8 @@ async def test_full_refund_revokes_and_partial_does_not(env, linked_user):
     await env.billing.process_refund(env.yoo.refund(record.yookassa_payment_id, "100.00"))
     assert env.backend.subs[linked_user]["state"] == "active"
 
-    await env.billing.process_refund(env.yoo.refund(record.yookassa_payment_id, "299.00"))
+    # Partial refunds that add up to the whole payment cancel the subscription.
+    await env.billing.process_refund(env.yoo.refund(record.yookassa_payment_id, "199.00"))
     assert env.backend.subs[linked_user]["state"] == "revoked"
     assert (await _record(env, linked_user)).status == PaymentStatus.REFUNDED
 
@@ -153,3 +161,37 @@ async def test_purchases_stop_a_year_ahead(env, linked_user):
                                      "paid_until": far, "access_until": far}
     with pytest.raises(CheckoutRefused):
         await env.billing.start_checkout(linked_user, "base")
+
+
+async def test_repeated_checkout_reuses_the_pending_payment(env, linked_user):
+    first = await env.billing.start_checkout(linked_user, "base")
+    assert await env.billing.start_checkout(linked_user, "base") == first
+    assert await env.billing.start_checkout(linked_user, "pro") != first
+    assert len(env.yoo.created) >= 2
+
+
+async def test_checkouts_per_hour_are_limited(env, linked_user):
+    for _ in range(CHECKOUTS_PER_HOUR):
+        await env.billing.start_checkout(linked_user, "base")
+        # Make the previous checkout unusable so a new payment is created.
+        async with env.db.session() as session:
+            record = await session.scalar(
+                select(Payment).where(Payment.telegram_user_id == linked_user)
+                .order_by(Payment.created_at.desc())
+            )
+            record.status = PaymentStatus.CANCELED
+    with pytest.raises(CheckoutRefused, match="too many"):
+        await env.billing.start_checkout(linked_user, "base")
+
+
+async def test_payment_is_never_credited_to_a_relinked_account(env, linked_user):
+    await env.billing.start_checkout(linked_user, "base")
+    record = await _record(env, linked_user)
+    env.yoo.succeed(record.yookassa_payment_id)
+    # The Telegram account was relinked to another Calmap account after checkout.
+    env.backend.accounts[linked_user] = uuid.uuid4()
+    await env.billing.process_payment(record.yookassa_payment_id)
+    assert not [e for e in env.backend.events.values() if e["telegram_user_id"] == linked_user]
+    stored = await _record(env, linked_user)
+    assert stored.delivered_at is None and stored.delivery_error
+    assert len([m for u, m in env.sent if u == linked_user and "не найден" in m]) == 1

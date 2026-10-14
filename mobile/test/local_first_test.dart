@@ -38,6 +38,25 @@ class _MemoryStore extends LocalStore {
   Future<void> removeFirstOutboxItem() async {
     if (queued.isNotEmpty) queued.removeAt(0);
   }
+
+  @override
+  Future<void> clear() async {
+    responses.clear();
+    queued.clear();
+  }
+}
+
+/// Fails like an offline network, but only after [delay].
+class _SlowOfflineClient extends http.BaseClient {
+  _SlowOfflineClient(this.delay);
+
+  final Duration delay;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    await Future<void>.delayed(delay);
+    throw const SocketException('offline');
+  }
 }
 
 class _OfflineClient extends http.BaseClient {
@@ -198,6 +217,39 @@ void main() {
     expect(expired, 1);
     expect(api.hasSession, isFalse);
     expect(secure.values.containsKey('refresh_token'), isFalse);
+  });
+
+  test(
+    'a change in flight during sign-out is not queued for the next user',
+    () async {
+      final store = _MemoryStore();
+      final api = ApiClient(
+        baseUrl: 'http://api.test',
+        client: _SlowOfflineClient(const Duration(milliseconds: 50)),
+        localStore: store,
+        storage: _MemorySecureStorage(),
+      );
+      await api.saveTokens({'access_token': 'a', 'refresh_token': 'r'});
+      final pending = api.post('/v1/diary/entries', {'name': 'secret'});
+      await api.clearSession();
+      await expectLater(pending, throwsA(isA<ApiException>()));
+      expect(store.queued, isEmpty);
+    },
+  );
+
+  test('a new sign-in discards the previous session\'s offline data', () async {
+    final store = _MemoryStore()
+      ..queued.add({'method': 'POST', 'path': '/v1/diary/entries', 'body': {}})
+      ..responses['/v1/auth/me'] = {'id': 'previous-user'};
+    final api = ApiClient(
+      baseUrl: 'http://api.test',
+      client: _OfflineClient(),
+      localStore: store,
+      storage: _MemorySecureStorage(),
+    );
+    await api.startSession({'access_token': 'b', 'refresh_token': 'r'});
+    expect(store.queued, isEmpty);
+    expect(store.responses, isEmpty);
   });
 
   test('completing onboarding is never queued offline', () async {

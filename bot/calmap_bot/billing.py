@@ -14,9 +14,15 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, func, select, text
 
-from calmap_bot.backend import BackendError, CalmapBackend, NotLinked, SubscriptionState
+from calmap_bot.backend import (
+    BackendError,
+    CalmapBackend,
+    LinkChanged,
+    NotLinked,
+    SubscriptionState,
+)
 from calmap_bot.db import BotUser, Database, Payment, PaymentStatus
 from calmap_bot.tariffs import Tariff
 from calmap_bot.yookassa import YooKassa, YooPayment
@@ -31,6 +37,11 @@ MAX_PREPAID = timedelta(days=365)
 BACKEND_LIMIT = timedelta(days=399)
 #: How long a pending payment is polled before it is considered abandoned.
 PENDING_WINDOW = timedelta(hours=24)
+#: A pending checkout for the same tier is reused instead of creating another.
+REUSE_PENDING = timedelta(hours=1)
+#: Payments a user may create per hour; bounds YooKassa calls and reconcile work.
+CHECKOUTS_PER_HOUR = 5
+RECONCILE_BATCH = 200
 
 
 class CheckoutRefused(ValueError):
@@ -89,36 +100,68 @@ class Billing:
     # ---------------------------------------------------------------- checkout
 
     async def start_checkout(self, telegram_user_id: int, tier: str) -> str:
-        """Create a YooKassa payment and return its confirmation URL."""
+        """Create a YooKassa payment (or reuse a fresh pending one for the same
+        tier) and return its confirmation URL."""
         tariff = self.tariffs[tier]
+        now = datetime.now(timezone.utc)
         async with self.db.session() as session:
             user = await session.get(BotUser, telegram_user_id)
-        if user is None:
-            raise CheckoutRefused("not linked")
+            if user is None:
+                raise CheckoutRefused("not linked")
+            reusable = await session.scalar(
+                select(Payment)
+                .where(
+                    Payment.telegram_user_id == telegram_user_id,
+                    Payment.calmap_user_id == user.calmap_user_id,
+                    Payment.tier == tier,
+                    Payment.status == PaymentStatus.PENDING,
+                    Payment.confirmation_url.is_not(None),
+                    Payment.created_at > now - REUSE_PENDING,
+                )
+                .order_by(Payment.created_at.desc())
+                .limit(1)
+            )
+            if reusable is not None:
+                return reusable.confirmation_url
+            recent = await session.scalar(
+                select(func.count())
+                .select_from(Payment)
+                .where(
+                    Payment.telegram_user_id == telegram_user_id,
+                    Payment.created_at > now - timedelta(hours=1),
+                )
+            )
+            if (recent or 0) >= CHECKOUTS_PER_HOUR:
+                raise CheckoutRefused("too many checkouts")
         current = await self.backend.status(telegram_user_id)
-        now = datetime.now(timezone.utc)
         if current.state == "active" and current.paid_until and current.paid_until - now > MAX_PREPAID:
             raise CheckoutRefused("prepaid too far ahead")
 
         record = Payment(
             telegram_user_id=telegram_user_id,
+            calmap_user_id=user.calmap_user_id,
             tier=tier,
             days=tariff.days,
             amount_rub=Decimal(tariff.price_rub),
         )
         async with self.db.session() as session:
             session.add(record)
-        yoo = await self.yookassa.create_payment(
-            # The record id doubles as the idempotence key: a retried request
-            # cannot create a second payment.
-            idempotence_key=str(record.id),
-            amount_rub=Decimal(tariff.price_rub),
-            description=f"Подписка Calmap {tariff.title} на {tariff.days} дней",
-            return_url=self.return_url,
-            metadata={"payment_record": str(record.id), "telegram_user_id": telegram_user_id, "tier": tier},
-            receipt_phone=user.phone if self.send_receipts else None,
-            vat_code=self.vat_code,
-        )
+        try:
+            yoo = await self.yookassa.create_payment(
+                # The record id doubles as the idempotence key: a retried request
+                # cannot create a second payment.
+                idempotence_key=str(record.id),
+                amount_rub=Decimal(tariff.price_rub),
+                description=f"Подписка Calmap {tariff.title} на {tariff.days} дней",
+                return_url=self.return_url,
+                metadata={"payment_record": str(record.id)},
+                receipt_phone=user.phone if self.send_receipts else None,
+                vat_code=self.vat_code,
+            )
+        except Exception:
+            async with self.db.session() as session:
+                await session.execute(delete(Payment).where(Payment.id == record.id))
+            raise
         async with self.db.session() as session:
             row = await session.get(Payment, record.id)
             row.yookassa_payment_id = yoo.id
@@ -171,14 +214,21 @@ class Billing:
             record = await session.get(Payment, record_id, with_for_update=True)
             if record is None or record.status != PaymentStatus.SUCCEEDED or record.delivered_at:
                 return
+            # Namespaced key: never collides with the backend's advisory locks.
             await session.execute(
-                text("SELECT pg_advisory_xact_lock(:key)"), {"key": record.telegram_user_id}
+                text("SELECT pg_advisory_xact_lock(hashtextextended('calmap-bot:' || :id, 0))"),
+                {"id": str(record.telegram_user_id)},
             )
+            now = datetime.now(timezone.utc)
             try:
                 current = await self.backend.status(record.telegram_user_id)
-                paid_until = record.paid_until or compute_paid_until(
-                    datetime.now(timezone.utc), current, self.tariffs[record.tier], self.prices
-                )
+                # A period computed for an attempt the backend never accepted may
+                # have gone stale; recompute it then.
+                paid_until = record.paid_until
+                if paid_until is None or paid_until <= now:
+                    paid_until = compute_paid_until(
+                        now, current, self.tariffs[record.tier], self.prices
+                    )
                 # Remember the computed end before calling the backend: a retry after
                 # a lost answer then repeats the same event instead of extending twice.
                 record.paid_until = paid_until
@@ -186,26 +236,37 @@ class Billing:
                 state = await self.backend.report_paid(
                     event_id=f"yookassa:{record.yookassa_payment_id}",
                     telegram_user_id=record.telegram_user_id,
+                    user_id=record.calmap_user_id,
                     tier=record.tier,
                     paid_until=paid_until,
                     amount=float(record.amount_rub),
                 )
-            except NotLinked:
-                # Paid, but the Calmap account is gone (deleted or relinked). Keep the
-                # record undelivered for support and tell the user once.
+            except (NotLinked, LinkChanged):
+                # Paid, but the account it was paid for is gone or the Telegram
+                # account now points elsewhere. Never credit another account: keep
+                # the record for support and tell the user once.
                 first_failure = record.delivery_error is None
-                record.delivery_error = "account not found"
-                logger.error("payment %s: Calmap account not found", record.id)
+                record.delivery_error = "account not found or relinked"
+                self._schedule_retry(record, now)
+                logger.error("payment %s: paid-for Calmap account unavailable", record.id)
                 if first_failure:
                     await self._safe_notify(record.telegram_user_id, "orphaned")
                 return
             except BackendError as exc:
                 record.delivery_error = str(exc)[:255]
+                self._schedule_retry(record, now)
                 logger.exception("delivery of payment %s failed; will retry", record.id)
                 return
             record.delivered_at = datetime.now(timezone.utc)
             record.delivery_error = None
         await self._safe_notify(record.telegram_user_id, "paid", state)
+
+    @staticmethod
+    def _schedule_retry(record: Payment, now: datetime) -> None:
+        """Exponential backoff: 2, 4, 8 … minutes, at most six hours apart."""
+        record.delivery_attempts += 1
+        delay = min(timedelta(minutes=2 ** record.delivery_attempts), timedelta(hours=6))
+        record.next_attempt_at = now + delay
 
     # ---------------------------------------------------------------- refunds
 
@@ -222,16 +283,20 @@ class Billing:
             )
             if record is None or record.status == PaymentStatus.REFUNDED:
                 return
-            if refund.amount < Decimal(record.amount_rub):
+            # Several partial refunds count once they add up to the whole payment.
+            payment = await self.yookassa.get_payment(refund.payment_id)
+            if payment.refunded < Decimal(record.amount_rub):
                 logger.info("partial refund %s of payment %s ignored", refund.id, refund.payment_id)
                 return
             try:
                 await self.backend.report_revoked(
                     event_id=f"yookassa-refund:{refund.id}",
                     telegram_user_id=record.telegram_user_id,
+                    user_id=record.calmap_user_id,
                 )
-            except NotLinked:
-                logger.info("refund %s: Calmap account no longer exists", refund.id)
+            except (NotLinked, LinkChanged):
+                # Only the account that paid may lose access; never another one.
+                logger.info("refund %s: the paid-for account is gone or relinked", refund.id)
             except BackendError:
                 logger.exception("refund %s not delivered; YooKassa will repeat it", refund.id)
                 raise
@@ -248,19 +313,25 @@ class Billing:
         async with self.db.session() as session:
             pending = (
                 await session.scalars(
-                    select(Payment.yookassa_payment_id).where(
+                    select(Payment.yookassa_payment_id)
+                    .where(
                         Payment.status == PaymentStatus.PENDING,
                         Payment.yookassa_payment_id.is_not(None),
                         Payment.created_at > now - PENDING_WINDOW,
                     )
+                    .order_by(Payment.created_at.desc())
+                    .limit(RECONCILE_BATCH)
                 )
             ).all()
             undelivered = (
                 await session.scalars(
-                    select(Payment.id).where(
+                    select(Payment.id)
+                    .where(
                         Payment.status == PaymentStatus.SUCCEEDED,
                         Payment.delivered_at.is_(None),
+                        (Payment.next_attempt_at.is_(None)) | (Payment.next_attempt_at <= now),
                     )
+                    .limit(RECONCILE_BATCH)
                 )
             ).all()
         for payment_id in pending:
@@ -269,7 +340,10 @@ class Billing:
             except Exception:  # noqa: BLE001 — one failure must not stop the loop
                 logger.exception("reconciling payment %s failed", payment_id)
         for record_id in undelivered:
-            await self.deliver(record_id)
+            try:
+                await self.deliver(record_id)
+            except Exception:  # noqa: BLE001 — one bad record must not stop the rest
+                logger.exception("delivering payment %s failed", record_id)
 
     # ------------------------------------------------------------- messaging
 

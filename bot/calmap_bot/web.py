@@ -12,7 +12,7 @@ import logging
 from aiohttp import web
 
 from calmap_bot.billing import Billing
-from calmap_bot.yookassa import YooKassaNotFound
+from calmap_bot.yookassa import OBJECT_ID, YooKassaNotFound
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,9 @@ def build_app(billing: Billing) -> web.Application:
             object_id = str((body.get("object") or {}).get("id", ""))
         except (ValueError, AttributeError):
             return web.json_response({"error": "bad request"}, status=400)
-        if not object_id:
-            return web.json_response({"error": "no object id"}, status=400)
+        # YooKassa ids are UUIDs; anything else never reaches its API.
+        if not OBJECT_ID.fullmatch(object_id):
+            return web.json_response({"error": "bad object id"}, status=400)
         try:
             if event.startswith("payment."):
                 await billing.process_payment(object_id)

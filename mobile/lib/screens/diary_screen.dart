@@ -47,6 +47,8 @@ class _DiaryScreenState extends State<DiaryScreen> {
         source: source,
         imageQuality: 82,
         maxWidth: 1600,
+        // Strip EXIF (GPS, device) before the photo leaves the phone.
+        requestFullMetadata: false,
       );
     } on PlatformException {
       _snack(

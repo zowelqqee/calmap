@@ -47,6 +47,10 @@ class BotSubscriptionEvent(BaseModel):
     #: Unique per event; repeats are ignored (safe retries).
     event_id: str = Field(min_length=1, max_length=128)
     telegram_user_id: int = Field(gt=0)
+    #: Calmap account the payment was made for (from /v1/bot/link). When given, the
+    #: event is refused if the Telegram account has since been linked elsewhere, so
+    #: a payment or refund can never land on another account.
+    user_id: uuid.UUID | None = None
     #: paid — access until `paid_until`; revoked — refund/cancellation, access ends now
     status: Literal["paid", "revoked"]
     tier: Literal["base", "pro"] | None = None

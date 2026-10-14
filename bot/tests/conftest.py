@@ -50,7 +50,7 @@ class FakeYooKassa:
     def handler(self, request: httpx.Request) -> httpx.Response:
         if request.method == "POST" and request.url.path == "/v3/payments":
             body = json.loads(request.content)
-            payment_id = f"yk-{uuid.uuid4().hex[:12]}"
+            payment_id = str(uuid.uuid4())
             self.created.append({**body, "idempotence_key": request.headers["Idempotence-Key"]})
             self.payments[payment_id] = {
                 "id": payment_id,
@@ -75,13 +75,16 @@ class FakeYooKassa:
             payment["amount"] = {"value": amount, "currency": "RUB"}
 
     def refund(self, payment_id: str, amount: str) -> str:
-        refund_id = f"rf-{uuid.uuid4().hex[:12]}"
+        refund_id = str(uuid.uuid4())
         self.refunds[refund_id] = {
             "id": refund_id,
             "payment_id": payment_id,
             "status": "succeeded",
             "amount": {"value": amount, "currency": "RUB"},
         }
+        payment = self.payments[payment_id]
+        total = Decimal(payment.get("refunded_amount", {}).get("value", "0")) + Decimal(amount)
+        payment["refunded_amount"] = {"value": f"{total:.2f}", "currency": "RUB"}
         return refund_id
 
 
@@ -90,16 +93,20 @@ class FakeBackend:
 
     def __init__(self) -> None:
         self.phones: dict[str, int] = {}
+        #: Calmap account id per Telegram user, as the backend links them.
+        self.accounts: dict[int, uuid.UUID] = {}
         self.subs: dict[int, dict] = {}
         self.events: dict[str, dict] = {}
         self.fail_events = False
 
-    def add_account(self, phone: str, telegram_user_id: int, **sub) -> None:
+    def add_account(self, phone: str, telegram_user_id: int, **sub) -> uuid.UUID:
         self.phones[phone] = telegram_user_id
+        self.accounts[telegram_user_id] = uuid.uuid4()
         self.subs[telegram_user_id] = {
             "state": "trial", "has_access": True, "tier": "trial",
             "paid_until": None, "access_until": "2030-01-01T00:00:00+00:00", **sub,
         }
+        return self.accounts[telegram_user_id]
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         assert request.headers["X-Bot-Secret"] == "secret"
@@ -108,7 +115,14 @@ class FakeBackend:
             body = json.loads(request.content)
             if body["phone"] not in self.phones:
                 return httpx.Response(404, json={"detail": "no account with this phone"})
-            return httpx.Response(200, json={"user_id": "u", "subscription": self.subs[body["telegram_user_id"]]})
+            telegram_user_id = body["telegram_user_id"]
+            return httpx.Response(
+                200,
+                json={"user_id": str(self.accounts[telegram_user_id]), "subscription": self.subs[telegram_user_id]},
+            )
+        if path.startswith("/v1/bot/link/") and request.method == "DELETE":
+            self.unlinked = int(path.rsplit("/", 1)[1])
+            return httpx.Response(204)
         if path.startswith("/v1/bot/subscription/") and request.method == "GET":
             telegram_user_id = int(path.rsplit("/", 1)[1])
             if telegram_user_id not in self.subs:
@@ -121,6 +135,8 @@ class FakeBackend:
             telegram_user_id = body["telegram_user_id"]
             if telegram_user_id not in self.subs:
                 return httpx.Response(404, json={"detail": "not linked"})
+            if body.get("user_id") and body["user_id"] != str(self.accounts[telegram_user_id]):
+                return httpx.Response(409, json={"detail": "linked to another account"})
             processed = body["event_id"] not in self.events
             if processed:
                 self.events[body["event_id"]] = body
@@ -175,9 +191,9 @@ _ids = iter(range(5_000_000, 6_000_000))
 async def linked_user(env) -> int:
     telegram_user_id = next(_ids)
     phone = f"7999{telegram_user_id:07d}"
-    env.backend.add_account(phone, telegram_user_id)
+    account = env.backend.add_account(phone, telegram_user_id)
     async with env.db.session() as session:
-        session.add(BotUser(telegram_user_id=telegram_user_id, phone=phone))
+        session.add(BotUser(telegram_user_id=telegram_user_id, phone=phone, calmap_user_id=account))
     return telegram_user_id
 
 

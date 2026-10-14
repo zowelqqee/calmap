@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -14,6 +15,16 @@ class BackendError(RuntimeError):
 
 class NotLinked(LookupError):
     """No Calmap account for this phone / Telegram user."""
+
+
+class LinkChanged(LookupError):
+    """The Telegram account is now linked to another Calmap account."""
+
+
+@dataclass(frozen=True, slots=True)
+class Linked:
+    user_id: uuid.UUID
+    subscription: "SubscriptionState"
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,17 +76,27 @@ class CalmapBackend:
             raise BackendError(f"backend unreachable: {exc.__class__.__name__}") from exc
         if response.status_code == 404:
             raise NotLinked(response.text)
+        if response.status_code == 409:
+            raise LinkChanged(response.text)
         if response.status_code >= 400:
             raise BackendError(f"backend answered {response.status_code}: {response.text[:200]}")
         return response.json()
 
-    async def link(self, phone: str, telegram_user_id: int, username: str | None) -> SubscriptionState:
+    async def link(self, phone: str, telegram_user_id: int, username: str | None) -> Linked:
         body = await self._request(
             "POST",
             "/v1/bot/link",
             json={"phone": phone, "telegram_user_id": telegram_user_id, "telegram_username": username},
         )
-        return SubscriptionState.from_json(body["subscription"])
+        return Linked(uuid.UUID(body["user_id"]), SubscriptionState.from_json(body["subscription"]))
+
+    async def unlink(self, telegram_user_id: int) -> None:
+        try:
+            response = await self._client.delete(f"/v1/bot/link/{telegram_user_id}")
+        except httpx.HTTPError as exc:
+            raise BackendError(f"backend unreachable: {exc.__class__.__name__}") from exc
+        if response.status_code >= 400:
+            raise BackendError(f"backend answered {response.status_code}")
 
     async def status(self, telegram_user_id: int) -> SubscriptionState:
         return SubscriptionState.from_json(
@@ -87,6 +108,7 @@ class CalmapBackend:
         *,
         event_id: str,
         telegram_user_id: int,
+        user_id: uuid.UUID,
         tier: str,
         paid_until: datetime,
         amount: float,
@@ -97,6 +119,7 @@ class CalmapBackend:
             json={
                 "event_id": event_id,
                 "telegram_user_id": telegram_user_id,
+                "user_id": str(user_id),
                 "status": "paid",
                 "tier": tier,
                 "paid_until": paid_until.isoformat(),
@@ -106,11 +129,18 @@ class CalmapBackend:
         )
         return SubscriptionState.from_json(body["subscription"])
 
-    async def report_revoked(self, *, event_id: str, telegram_user_id: int) -> SubscriptionState:
+    async def report_revoked(
+        self, *, event_id: str, telegram_user_id: int, user_id: uuid.UUID
+    ) -> SubscriptionState:
         body = await self._request(
             "POST",
             "/v1/bot/subscription/events",
-            json={"event_id": event_id, "telegram_user_id": telegram_user_id, "status": "revoked"},
+            json={
+                "event_id": event_id,
+                "telegram_user_id": telegram_user_id,
+                "user_id": str(user_id),
+                "status": "revoked",
+            },
         )
         return SubscriptionState.from_json(body["subscription"])
 

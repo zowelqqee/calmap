@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from datetime import datetime, timedelta, timezone
 
 from aiohttp.test_utils import TestClient, TestServer
@@ -46,9 +48,15 @@ async def test_webhook_rereads_the_payment_and_delivers(env, linked_user):
         # A forged body claiming success for an unknown payment changes nothing.
         forged = await client.post(
             "/yookassa/webhook",
-            json={"event": "payment.succeeded", "object": {"id": "yk-unknown-but-ignored"}},
+            json={"event": "payment.succeeded", "object": {"id": str(uuid.uuid4())}},
         )
         assert forged.status == 200
+        # Ids that are not YooKassa UUIDs never reach its API.
+        malformed = await client.post(
+            "/yookassa/webhook",
+            json={"event": "payment.succeeded", "object": {"id": "../refunds/x"}},
+        )
+        assert malformed.status == 400
         response = await client.post(
             "/yookassa/webhook",
             json={"event": "payment.succeeded", "object": {"id": record.yookassa_payment_id, "status": "succeeded"}},
