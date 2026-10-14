@@ -18,7 +18,12 @@ class OAuthNotConfigured implements Exception {
 /// Unified Biometric System or a Russian-owned system (149-FZ), and sign-in via
 /// Google or Apple ID is fined under article 13.55 of the Administrative Code.
 class OAuthService {
+  /// VK ID sign-in is postponed: the sign-in screen shows it as "available
+  /// later". Enable with --dart-define=VK_ENABLED=true plus VK_CLIENT_ID.
+  static const vkEnabled = bool.fromEnvironment('VK_ENABLED');
   static const vkClientId = String.fromEnvironment('VK_CLIENT_ID');
+
+  static bool get vkAvailable => vkEnabled && vkClientId.isNotEmpty;
   static const vkRedirectUrl = String.fromEnvironment(
     'VK_REDIRECT_URL',
     defaultValue: 'ru.calmap.app:/oauth',

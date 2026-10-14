@@ -148,14 +148,15 @@ SMS_PER_NETWORK_DAILY=100 # SMS в сутки с одного IPv4 / IPv6 /64
 
 `SMS_PROVIDER=stub` (разработка) пишет код в лог; в production отклоняется.
 
-Вход через VK ID (необязательно):
+Вход через VK ID — отложен: в приложении кнопка неактивна с подписью «Будет
+доступно позже», backend без `VK_CLIENT_ID` отклоняет вход через VK. Включение:
 
 ```dotenv
 VK_CLIENT_ID=...
 ```
 
-Сборка приложения: `VK_CLIENT_ID`, `VK_REDIRECT_URL` в `config/production.json`.
-Кнопка VK ID появляется, только если ID задан. Первый вход через VK требует
+Сборка приложения: `VK_ENABLED=true`, `VK_CLIENT_ID`, `VK_REDIRECT_URL` в
+`config/production.json`. Кнопка VK ID активна, только если заданы оба первых. Первый вход через VK требует
 согласия (`personal_data_consent: true`). Аккаунт привязывается к существующему
 только по email, подтверждённому VK.
 

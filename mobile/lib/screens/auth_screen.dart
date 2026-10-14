@@ -9,7 +9,7 @@ import '../core/oauth_service.dart';
 import '../core/theme.dart';
 
 /// Sign-in by a Russian mobile number and an SMS code (the first sign-in creates
-/// the account), or through VK ID when the build is configured for it.
+/// the account). VK ID is shown as "available later" until it is enabled.
 class AuthScreen extends StatefulWidget {
   const AuthScreen({
     required this.api,
@@ -326,7 +326,7 @@ class _AuthScreenState extends State<AuthScreen> {
                     )
                   : Text(codeStep ? 'Войти' : 'Получить код'),
             ),
-            if (OAuthService.vkClientId.isNotEmpty && !codeStep) ...[
+            if (!codeStep) ...[
               const SizedBox(height: 14),
               const Row(
                 children: [
@@ -340,9 +340,19 @@ class _AuthScreenState extends State<AuthScreen> {
               ),
               const SizedBox(height: 14),
               OutlinedButton(
-                onPressed: loading ? null : _vk,
+                onPressed: OAuthService.vkAvailable && !loading ? _vk : null,
                 child: const Text('Войти через VK ID'),
               ),
+              if (!OAuthService.vkAvailable) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'Будет доступно позже',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: mutedInk),
+                ),
+              ],
             ],
             const SizedBox(height: 22),
             LegalLinksText(api: widget.api, prefix: 'Продолжая, вы принимаете'),

@@ -10,7 +10,7 @@ Flutter-клиент для API из `../backend`. Платформы: iOS и An
 | Ключ | Назначение |
 |---|---|
 | `API_BASE_URL` | адрес backend; в release — только `https://` |
-| `VK_CLIENT_ID`, `VK_REDIRECT_URL` | VK ID; пусто — кнопка VK скрыта |
+| `VK_ENABLED`, `VK_CLIENT_ID`, `VK_REDIRECT_URL` | VK ID (отложен); без `VK_ENABLED=true` и ID кнопка неактивна, подпись «Будет доступно позже» |
 
 ```bash
 cp config/development.example.json config/development.json   # локальная разработка
