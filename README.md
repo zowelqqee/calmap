@@ -15,6 +15,7 @@
 | [INTEGRATIONS.md](INTEGRATIONS.md) | API для Telegram-бота оплаты, вход через VK ID, распознавание, AI |
 | [mobile/README.md](mobile/README.md) | Сборка клиента, подпись, конфигурация |
 | [bot/README.md](bot/README.md) | Telegram-бот оплаты: сценарий, ЮKassa, настройка |
+| [docs/security/audit.md](docs/security/audit.md) | Проверка безопасности: найдено, исправлено, остаточные риски |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | Стороннее содержимое (анатомическая графика) |
 
 ## Локальный запуск
@@ -45,9 +46,9 @@ flutter run --dart-define-from-file=config/development.json
 ## Проверки
 
 ```bash
-cd backend && .venv/bin/ruff check app tests && .venv/bin/python -m pytest -q   # 120 тестов
-cd mobile && flutter analyze && flutter test                                    # 20 тестов + 4 golden (только macOS)
-cd bot && .venv/bin/ruff check calmap_bot tests && .venv/bin/python -m pytest -q # 17 тестов
+cd backend && .venv/bin/ruff check app tests && .venv/bin/python -m pytest -q   # 135 тестов
+cd mobile && flutter analyze && flutter test                                    # 22 теста + 4 golden (только macOS)
+cd bot && .venv/bin/ruff check calmap_bot tests && .venv/bin/python -m pytest -q # 20 тестов
 ```
 
 Тесты backend создают отдельную БД `calmap_test` и прогоняют те же миграции Alembic,

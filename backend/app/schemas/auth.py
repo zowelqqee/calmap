@@ -64,5 +64,6 @@ class UserOut(BaseModel):
 
 class ProfileUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
-    avatar_url: str | None = Field(default=None, max_length=500)
+    # https only: a javascript: or data: URL would reach whatever renders it.
+    avatar_url: str | None = Field(default=None, max_length=500, pattern=r"^https://[^\s]+$")
     region_code: str | None = Field(default=None, min_length=2, max_length=16)

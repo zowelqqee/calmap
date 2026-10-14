@@ -6,6 +6,7 @@ __pycache__/
 .ruff_cache/
 .env
 .env.local
+.env.bot
 *.sqlite3
 .DS_Store
 .idea/

@@ -12,7 +12,10 @@
 git clone <репозиторий> /opt/calmap
 cd /opt/calmap/backend
 cp .env.production.example .env
-openssl rand -hex 32          # значение для SECRET_KEY
+cp .env.bot.example .env.bot
+chmod 600 .env .env.bot
+openssl rand -hex 32          # значение для SECRET_KEY и TELEGRAM_BOT_API_SECRET
+openssl rand -hex 24          # пароли PostgreSQL
 ```
 
 В `.env` заполните все строки с пометкой `CHANGE`:
@@ -22,8 +25,11 @@ openssl rand -hex 32          # значение для SECRET_KEY
 | `SECRET_KEY` | результат `openssl rand -hex 32` |
 | `DOMAIN`, `CORS_ORIGINS`, `RECIPE_IMAGE_PUBLIC_BASE_URL` | ваш домен API |
 | `SMSRU_API_ID`, `SMS_SENDER` | ключ SMS.ru и имя отправителя для кодов входа |
-| `TELEGRAM_BOT_API_SECRET` | общий секрет с ботом оплаты (`openssl rand -hex 32`) |
-| `POSTGRES_PASSWORD` и пароль внутри `DATABASE_URL` | одинаковый длинный пароль |
+| `TELEGRAM_BOT_API_SECRET` | общий секрет с ботом оплаты (`openssl rand -hex 32`), то же значение в `.env.bot` |
+| `POSTGRES_PASSWORD` | пароль суперпользователя (обслуживание, бэкапы) |
+| `APP_DB_PASSWORD` и пароль внутри `DATABASE_URL` | роль backend-а `calmap_app` без прав суперпользователя |
+| `BOT_DB_PASSWORD` и пароль внутри `DATABASE_URL` в `.env.bot` | роль бота `calmap_bot`, видит только схему `bot` |
+| `BACKUP_PASSPHRASE` | пароль шифрования бэкапов; хранить также вне сервера |
 | `LEGAL_OPERATOR_NAME`, `LEGAL_CONTACT_EMAIL` | юрлицо/ИП и почта для обращений по персональным данным |
 | `ASSISTANT_PROCESSOR_NAME`, `ASSISTANT_PROCESSOR_COUNTRY` | кто и в какой стране обрабатывает запросы AI-консультанта (текст согласия) |
 
@@ -37,6 +43,9 @@ curl https://api.example.ru/health      # {"status":"ok","database":"ok",...}
 
 При старте контейнер применяет миграции и обновляет каталог; Caddy сам получает и
 продлевает сертификат. Backend слушает только `127.0.0.1:8000`, наружу открыт Caddy.
+Роли `calmap_app` и `calmap_bot` создаются при первом запуске пустой базы
+(`docker/db-roles.sh`). Меры защиты и остаточные риски —
+[docs/security/audit.md](docs/security/audit.md).
 
 Проверьте в браузере: `https://api.example.ru/legal/privacy` и `/legal/terms` —
 в тексте должны стоять ваши реквизиты.
@@ -44,12 +53,20 @@ curl https://api.example.ru/health      # {"status":"ok","database":"ok",...}
 ### Бэкапы
 
 Сервис `backup` раз в сутки пишет `pg_dump` в `BACKUP_DIR` (по умолчанию
-`/opt/calmap/backups`) и хранит `BACKUP_KEEP_DAYS` дней. Копируйте этот каталог на
-другой сервер или в объектное хранилище. Восстановление:
+`/opt/calmap/backups`) и хранит `BACKUP_KEEP_DAYS` дней. Файлы доступны только
+владельцу; при заданном `BACKUP_PASSPHRASE` они зашифрованы (`*.dump.enc`).
+Копируйте каталог на другой сервер или в объектное хранилище. Восстановление:
 
 ```bash
+cd /opt/calmap/backend
+docker compose stop backend bot
+# только для зашифрованного файла:
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+  -in ../backups/calmap-YYYYMMDD-HHMMSS.dump.enc -out /tmp/calmap.dump
 docker compose exec -T db pg_restore -U calmap -d calmap --clean --if-exists \
-  < /opt/calmap/backups/calmap-YYYYMMDD-HHMMSS.dump
+  < /tmp/calmap.dump        # или ../backups/calmap-YYYYMMDD-HHMMSS.dump
+rm /tmp/calmap.dump
+docker compose --profile https up -d
 ```
 
 ### Обновление
@@ -77,7 +94,16 @@ cd backend && docker compose --profile https up -d --build
 3. Запустите с профилем `https`. Порт 8000 перестанет быть доступен снаружи. Старые
    сборки приложения с адресом `http://IP:8000` после этого не подключатся — выпустите
    новую сборку с HTTPS-адресом (раздел 3).
-4. Временно оставить порт открытым можно через `BACKEND_BIND=0.0.0.0`.
+4. Роли БД и отдельный `.env.bot` (база уже существует, поэтому роли создаются
+   вручную):
+   ```bash
+   # в .env: APP_DB_PASSWORD, BOT_DB_PASSWORD, DATABASE_URL с calmap_app,
+   # переменные бота перенести в .env.bot (см. .env.bot.example)
+   docker compose down          # без -v: сеть compose теперь с фиксированной подсетью
+   docker compose up -d db
+   docker compose exec db sh /db-roles.sh
+   docker compose --profile https up -d --build
+   ```
 
 ### Каталог Open Food Facts (необязательно)
 
@@ -97,6 +123,7 @@ docker compose run --rm --entrypoint python backend \
 - [ ] SMS-вход: договор с SMS.ru, пополненный баланс, согласованное имя отправителя,
       `SMS_PROVIDER=smsru`. Без этого пользователи не смогут войти.
 - [ ] Telegram-бот оплаты (`bot/`, запускается профилем `https`):
+      Все переменные бота — в `.env.bot`, не в `.env`.
       1. @BotFather → `/newbot`, токен в `BOT_TOKEN`; `YOOKASSA_RETURN_URL` =
          `https://t.me/<имя_бота>`.
       2. Магазин ЮKassa: `YOOKASSA_SHOP_ID`, `YOOKASSA_SECRET_KEY`; включить чеки

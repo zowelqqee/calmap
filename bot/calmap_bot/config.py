@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Read from the same .env as the backend (docker compose env_file)."""
+    """Read from the bot's own environment (docker compose env_file: .env.bot)."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

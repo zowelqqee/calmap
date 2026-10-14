@@ -12,9 +12,11 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+# requirements.lock pins every runtime dependency (tested and audited versions);
+# regenerate it when pyproject.toml changes, see docs/security/audit.md.
+COPY pyproject.toml requirements.lock ./
 COPY app ./app
-RUN pip install .
+RUN pip install --constraint requirements.lock .
 
 COPY alembic.ini ./
 COPY alembic ./alembic

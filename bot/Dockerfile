@@ -7,9 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TZ=Europe/Moscow
 
 WORKDIR /app
-COPY pyproject.toml ./
+COPY pyproject.toml requirements.lock ./
 COPY calmap_bot ./calmap_bot
-RUN pip install . && useradd --system --uid 10002 --home-dir /app calmapbot
+RUN pip install --constraint requirements.lock . && useradd --system --uid 10002 --home-dir /app calmapbot
 USER calmapbot
 
 EXPOSE 8080
