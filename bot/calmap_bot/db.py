@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Integer, MetaData, Numeric, String, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, MetaData, Numeric, String, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -34,6 +34,10 @@ class BotUser(Base):
     phone: Mapped[str] = mapped_column(String(16), nullable=False)
     #: The Calmap account this Telegram user is linked to (from /v1/bot/link).
     calmap_user_id: Mapped[uuid.UUID] = mapped_column(PgUUID(as_uuid=True), nullable=False)
+    #: Reminders before access ends; the user turns them off with /reminders_off.
+    reminders_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False
+    )
     linked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

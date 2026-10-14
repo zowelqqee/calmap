@@ -6,6 +6,8 @@
   category, art. 10).
 * ai_assistant — before the first AI consultation, whose provider may be abroad
   (cross-border transfer, art. 12).
+* photo_recognition — before the first photo goes to the recognition provider,
+  which may be abroad (art. 12).
 
 Each act is stored with the document version, time, IP address and user agent.
 """
@@ -26,6 +28,7 @@ CONSENT_DOCUMENTS: dict[str, tuple[str, str]] = {
     "personal_data": ("2026-10-14", "consent"),
     "health_data": ("2026-10-14", "health-consent"),
     "ai_assistant": ("2026-10-14", "ai-consent"),
+    "photo_recognition": ("2026-10-15", "photo-consent"),
 }
 
 #: Withdrawing these ends all processing, i.e. the account itself (art. 9 part 5).
@@ -35,6 +38,7 @@ REQUIRED_MESSAGES = {
     "personal_data": "Для регистрации нужно согласие на обработку персональных данных.",
     "health_data": "Подтвердите согласие на обработку данных о здоровье.",
     "ai_assistant": "Подтвердите согласие на передачу данных AI-консультанту.",
+    "photo_recognition": "Подтвердите согласие на передачу фото сервису распознавания.",
 }
 
 

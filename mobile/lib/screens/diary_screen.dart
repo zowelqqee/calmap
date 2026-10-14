@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../core/api_client.dart';
+import '../core/legal.dart';
 import '../core/theme.dart';
 
 class DiaryScreen extends StatefulWidget {
@@ -61,9 +62,14 @@ class _DiaryScreenState extends State<DiaryScreen> {
     if (file == null) return;
     if (mounted) setState(() => loading = true);
     try {
-      final recognition = await widget.api.uploadImage(
-        bytes: await file.readAsBytes(),
-        filename: file.name,
+      final bytes = await file.readAsBytes();
+      final filename = file.name;
+      if (!mounted) return;
+      // The first photo asks for the consent to send it to the recognition service.
+      final recognition = await withConsent(
+        context,
+        widget.api,
+        () => widget.api.uploadImage(bytes: bytes, filename: filename),
       );
       await _confirmRecognition(recognition);
       await _load();

@@ -27,6 +27,7 @@ PAGES = {
     "consent": "consent.md",
     "health-consent": "health-consent.md",
     "ai-consent": "ai-consent.md",
+    "photo-consent": "photo-consent.md",
     "recommendations": "recommendations.md",
 }
 
@@ -117,13 +118,23 @@ def render_markdown(source: str) -> tuple[str, str]:
 
 
 @lru_cache
-def _page(name: str, operator: str, email: str, ai_processor: str, ai_country: str) -> str:
+def _page(
+    name: str,
+    operator: str,
+    email: str,
+    ai_processor: str,
+    ai_country: str,
+    vision_processor: str,
+    vision_country: str,
+) -> str:
     source = (LEGAL_DIR / PAGES[name]).read_text(encoding="utf-8").format(
         operator=operator,
         email=email,
         effective_date=EFFECTIVE_DATE,
         ai_processor=ai_processor,
         ai_country=ai_country,
+        vision_processor=vision_processor,
+        vision_country=vision_country,
     )
     title, body = render_markdown(source)
     return f"""<!doctype html>
@@ -151,5 +162,17 @@ async def legal_page(name: str) -> HTMLResponse:
     email = settings.legal_contact_email or "адрес, указанный в карточке приложения"
     ai_processor = settings.assistant_processor_name or "провайдер AI-модели, указанный оператором"
     ai_country = settings.assistant_processor_country or "уточняется оператором"
-    return HTMLResponse(_page(name, operator, email, ai_processor, ai_country))
+    vision_processor = (
+        settings.vision_processor_name
+        or settings.assistant_processor_name
+        or "сервис распознавания изображений, указанный оператором"
+    )
+    vision_country = (
+        settings.vision_processor_country
+        or settings.assistant_processor_country
+        or "уточняется оператором"
+    )
+    return HTMLResponse(
+        _page(name, operator, email, ai_processor, ai_country, vision_processor, vision_country)
+    )
 

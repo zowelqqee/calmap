@@ -163,6 +163,23 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
         await forget(message.from_user.id)
         await message.answer(texts.FORGOTTEN, reply_markup=ReplyKeyboardRemove())
 
+    async def set_reminders(message: Message, enabled: bool) -> None:
+        async with db.session() as session:
+            user = await session.get(BotUser, message.from_user.id)
+            if user is None:
+                await message.answer(texts.NEED_LINK)
+                return
+            user.reminders_enabled = enabled
+        await message.answer(texts.REMINDERS_ON if enabled else texts.REMINDERS_OFF)
+
+    @router.message(Command("reminders_off"))
+    async def reminders_off(message: Message) -> None:
+        await set_reminders(message, False)
+
+    @router.message(Command("reminders_on"))
+    async def reminders_on(message: Message) -> None:
+        await set_reminders(message, True)
+
     @router.message(Command("help"))
     async def help_(message: Message) -> None:
         await message.answer(texts.help_text(settings.support_contact))

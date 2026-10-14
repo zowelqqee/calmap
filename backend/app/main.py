@@ -50,6 +50,14 @@ def _warn_about_unfinished_configuration() -> None:
             "ASSISTANT_PROCESSOR_NAME / ASSISTANT_PROCESSOR_COUNTRY are not set: "
             "the AI consent does not name who processes the data"
         )
+    vision_named = (
+        settings.vision_processor_name or settings.assistant_processor_name
+    ) and (settings.vision_processor_country or settings.assistant_processor_country)
+    if settings.vision_provider != "stub" and not vision_named:
+        logger.warning(
+            "VISION_PROCESSOR_NAME / VISION_PROCESSOR_COUNTRY are not set: "
+            "the photo consent does not name who processes the photos"
+        )
     if not settings.legal_operator_name or not settings.legal_contact_email:
         logger.warning(
             "LEGAL_OPERATOR_NAME / LEGAL_CONTACT_EMAIL are not set: "

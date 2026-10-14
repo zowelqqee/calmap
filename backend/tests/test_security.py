@@ -287,3 +287,128 @@ def _last_sms(phone: str) -> str:
     from app.services.sms import get_sms_provider
 
     return get_sms_provider().sent[normalize_phone(phone)]
+
+
+# ------------------------------------------------------ photos and consents
+
+
+def _jpeg_with_exif() -> bytes:
+    import struct
+
+    exif = b"Exif\x00\x00" + b"GPS-55.7558N-37.6173E" * 4
+    xmp = b"http://ns.adobe.com/xap/1.0/\x00<x:xmpmeta>device</x:xmpmeta>"
+    comment = b"taken at home"
+    icc = b"ICC_PROFILE\x00" + b"\x01" * 20
+    jfif = b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+
+    def segment(marker: int, body: bytes) -> bytes:
+        return bytes([0xFF, marker]) + struct.pack(">H", len(body) + 2) + body
+
+    return (
+        b"\xff\xd8"
+        + segment(0xE0, jfif)
+        + segment(0xE1, exif)
+        + segment(0xE1, xmp)
+        + segment(0xE2, icc)
+        + segment(0xFE, comment)
+        + segment(0xDB, b"\x00" + b"\x10" * 64)
+        + b"\xff\xda\x00\x02pixels\xff\xd9"
+    )
+
+
+def test_jpeg_metadata_is_removed_and_pixels_kept():
+    from app.services.image_metadata import strip_metadata
+
+    original = _jpeg_with_exif()
+    clean = strip_metadata(original, "image/jpeg")
+    for secret in (b"GPS-55", b"xmpmeta", b"taken at home", b"Exif"):
+        assert secret not in clean
+    assert b"JFIF" in clean and b"ICC_PROFILE" in clean
+    assert clean.endswith(b"\xff\xda\x00\x02pixels\xff\xd9")
+    assert b"\xff\xdb" in clean  # quantisation tables stay
+
+
+def test_png_and_webp_metadata_is_removed():
+    import struct
+    import zlib
+
+    from app.services.image_metadata import strip_metadata
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(
+            ">I", zlib.crc32(kind + body)
+        )
+
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", b"\x00" * 13)
+        + chunk(b"eXIf", b"GPS-secret")
+        + chunk(b"tEXt", b"Author\x00someone")
+        + chunk(b"IDAT", b"pixels")
+        + chunk(b"IEND", b"")
+    )
+    clean_png = strip_metadata(png, "image/png")
+    assert b"GPS-secret" not in clean_png and b"someone" not in clean_png
+    assert b"IDAT" in clean_png and clean_png.endswith(chunk(b"IEND", b""))
+
+    def riff(kind: bytes, body: bytes) -> bytes:
+        return kind + struct.pack("<I", len(body)) + body + (b"\x00" if len(body) & 1 else b"")
+
+    vp8x = bytearray(10)
+    vp8x[0] = 0x08 | 0x04  # EXIF and XMP flags
+    chunks = riff(b"VP8X", bytes(vp8x)) + riff(b"VP8 ", b"pixels") + riff(b"EXIF", b"GPS-x")
+    chunks += riff(b"XMP ", b"<xmp/>")
+    webp = b"RIFF" + struct.pack("<I", len(chunks) + 4) + b"WEBP" + chunks
+    clean_webp = strip_metadata(webp, "image/webp")
+    assert b"GPS-x" not in clean_webp and b"<xmp/>" not in clean_webp
+    assert b"pixels" in clean_webp
+    assert struct.unpack("<I", clean_webp[4:8])[0] == len(clean_webp) - 8
+    assert clean_webp[20] & 0x0C == 0  # flags cleared in VP8X
+
+
+def test_broken_or_unsupported_images_are_refused():
+    import pytest
+
+    from app.services.image_metadata import UnsupportedImage, strip_metadata
+
+    for data, kind in (
+        (b"not an image", "image/jpeg"),
+        (b"\xff\xd8\xff\xe1\xff\xff", "image/jpeg"),
+        (b"\x89PNG\r\n\x1a\n\x00", "image/png"),
+        (b"....", "image/heic"),
+    ):
+        with pytest.raises(UnsupportedImage):
+            strip_metadata(data, kind)
+
+
+async def test_photo_recognition_needs_its_consent(auth_client: AsyncClient):
+    from tests.test_api_flow import complete_onboarding, fake_photo
+
+    await complete_onboarding(auth_client)
+    refused = await auth_client.post("/v1/vision/recognize", files=fake_photo(b"consent"))
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["document"] == "photo_recognition"
+
+    given = await auth_client.post("/v1/me/consents", json={"document": "photo_recognition"})
+    assert given.status_code == 201
+    assert (
+        await auth_client.post("/v1/vision/recognize", files=fake_photo(b"consent"))
+    ).status_code == 200
+
+    assert (await auth_client.delete("/v1/me/consents/photo_recognition")).status_code == 204
+    assert (
+        await auth_client.post("/v1/vision/recognize", files=fake_photo(b"again"))
+    ).status_code == 409
+
+
+async def test_photo_consent_page_names_the_processor(client: AsyncClient, monkeypatch):
+    from app.api import legal
+
+    legal._page.cache_clear()
+    monkeypatch.setattr(settings, "assistant_processor_name", "OpenAI, L.L.C.")
+    monkeypatch.setattr(settings, "assistant_processor_country", "США")
+    page = await client.get("/legal/photo-consent")
+    assert page.status_code == 200
+    assert "OpenAI, L.L.C." in page.text and "США" in page.text
+    assert "геопозиция" in page.text
+    legal._page.cache_clear()

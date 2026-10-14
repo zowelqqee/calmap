@@ -79,3 +79,113 @@ class _LegalLinksTextState extends State<LegalLinksText> {
     );
   }
 }
+
+/// Consents asked in the app when a feature first needs them (152-FZ art. 9, 12).
+class ConsentRequest {
+  const ConsentRequest({
+    required this.document,
+    required this.title,
+    required this.summary,
+    required this.page,
+  });
+
+  final String document;
+  final String title;
+  final String summary;
+
+  /// Full text at `/legal/<page>`.
+  final String page;
+
+  static const aiAssistant = ConsentRequest(
+    document: 'ai_assistant',
+    title: 'Передача данных AI-консультанту',
+    summary:
+        'Для ответа AI-консультанту передаются ваш вопрос, данные анкеты '
+        '(пол, вес, цель, тип питания, аллергии, бюджет), нормы и последние '
+        'записи дневника. Имя и номер телефона не передаются. Сервис может '
+        'находиться за пределами России.',
+    page: 'ai-consent',
+  );
+
+  static const photoRecognition = ConsentRequest(
+    document: 'photo_recognition',
+    title: 'Распознавание фото',
+    summary:
+        'Фото блюда передаётся сервису распознавания. Геопозиция, модель '
+        'телефона и время съёмки из файла удаляются, имя и номер телефона не '
+        'передаются. Фото не хранится на сервере. Сервис может находиться за '
+        'пределами России.',
+    page: 'photo-consent',
+  );
+
+  static const all = [aiAssistant, photoRecognition];
+
+  static ConsentRequest? byDocument(String? document) {
+    for (final request in all) {
+      if (request.document == document) return request;
+    }
+    return null;
+  }
+}
+
+/// Shows the consent and records it on the server when accepted.
+Future<bool> askConsent(
+  BuildContext context,
+  ApiClient api,
+  ConsentRequest request,
+) async {
+  final accepted = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(request.title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(request.summary),
+          const SizedBox(height: 10),
+          GestureDetector(
+            onTap: () => openLegalPage(context, api, request.page),
+            child: const Text(
+              'Текст согласия',
+              style: TextStyle(
+                color: olive,
+                decoration: TextDecoration.underline,
+              ),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text('Отмена'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text('Согласен'),
+        ),
+      ],
+    ),
+  );
+  if (accepted != true) return false;
+  await api.post('/v1/me/consents', {'document': request.document});
+  return true;
+}
+
+/// Runs [action]; when the server asks for one of the in-app consents, asks
+/// the user and repeats [action] once after consent.
+Future<T> withConsent<T>(
+  BuildContext context,
+  ApiClient api,
+  Future<T> Function() action,
+) async {
+  try {
+    return await action();
+  } on ApiException catch (exception) {
+    final request = ConsentRequest.byDocument(exception.consentDocument);
+    if (request == null || !context.mounted) rethrow;
+    if (!await askConsent(context, api, request)) rethrow;
+    return action();
+  }
+}

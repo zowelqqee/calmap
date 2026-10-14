@@ -19,7 +19,7 @@ from app.services.consent import (
 
 router = APIRouter(prefix="/me/consents", tags=["consents"])
 
-ConsentDocument = Literal["personal_data", "health_data", "ai_assistant"]
+ConsentDocument = Literal["personal_data", "health_data", "ai_assistant", "photo_recognition"]
 
 
 class ConsentIn(BaseModel):

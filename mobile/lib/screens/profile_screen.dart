@@ -30,7 +30,9 @@ class _ProfileScreenState extends State<ProfileScreen>
   Map<String, dynamic>? me;
   Map<String, dynamic>? targets;
   SubscriptionStatus? subscription;
-  bool aiConsentGiven = false;
+
+  /// In-app consents currently given (documents from [ConsentRequest.all]).
+  Set<String> givenConsents = {};
   String city = 'Москва';
   bool loading = true;
 
@@ -89,9 +91,10 @@ class _ProfileScreenState extends State<ProfileScreen>
       final consents = await widget.api
           .getList('/v1/me/consents')
           .catchError((Object _) => <dynamic>[]);
-      aiConsentGiven = consents.any(
-        (raw) => raw is Map && raw['document'] == 'ai_assistant',
-      );
+      givenConsents = {
+        for (final raw in consents)
+          if (raw is Map) raw['document'].toString(),
+      };
     } on ApiException catch (exception) {
       if (mounted) _snack(exception.message);
     } finally {
@@ -239,14 +242,24 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
   }
 
-  Future<void> _withdrawAiConsent() async {
+  Future<void> _toggleConsent(ConsentRequest request) async {
+    if (!givenConsents.contains(request.document)) {
+      try {
+        if (await askConsent(context, widget.api, request) && mounted) {
+          setState(() => givenConsents.add(request.document));
+        }
+      } on ApiException catch (exception) {
+        if (mounted) _snack(exception.message);
+      }
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Отозвать согласие?'),
-        content: const Text(
-          'Данные больше не будут передаваться AI-консультанту. Остальные '
-          'функции продолжат работать.',
+        content: Text(
+          '«${request.title}» перестанет работать до нового согласия. '
+          'Остальные функции продолжат работать.',
         ),
         actions: [
           TextButton(
@@ -262,8 +275,8 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
     if (confirmed != true) return;
     try {
-      await widget.api.delete('/v1/me/consents/ai_assistant');
-      if (mounted) setState(() => aiConsentGiven = false);
+      await widget.api.delete('/v1/me/consents/${request.document}');
+      if (mounted) setState(() => givenConsents.remove(request.document));
     } on ApiException catch (exception) {
       if (mounted) _snack(exception.message);
     }
@@ -398,7 +411,15 @@ class _ProfileScreenState extends State<ProfileScreen>
               const SizedBox(height: 12),
               Card(
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
+                      child: Text(
+                        'Документы и согласия',
+                        style: TextStyle(fontSize: 18),
+                      ),
+                    ),
                     ListTile(
                       leading: const Icon(Icons.description_outlined),
                       title: const Text('Пользовательское соглашение'),
@@ -420,18 +441,41 @@ class _ProfileScreenState extends State<ProfileScreen>
                           openLegalPage(context, widget.api, 'consent'),
                     ),
                     ListTile(
+                      leading: const Icon(Icons.monitor_heart_outlined),
+                      title: const Text(
+                        'Согласие на обработку данных о здоровье',
+                      ),
+                      trailing: const Icon(Icons.open_in_new_rounded, size: 18),
+                      onTap: () =>
+                          openLegalPage(context, widget.api, 'health-consent'),
+                    ),
+                    ListTile(
                       leading: const Icon(Icons.tune_outlined),
                       title: const Text('Как подбираются рекомендации'),
                       trailing: const Icon(Icons.open_in_new_rounded, size: 18),
                       onTap: () =>
                           openLegalPage(context, widget.api, 'recommendations'),
                     ),
-                    if (aiConsentGiven)
+                    for (final request in ConsentRequest.all)
                       ListTile(
-                        leading: const Icon(Icons.auto_awesome_outlined),
-                        title: const Text('Передача данных AI-консультанту'),
-                        subtitle: const Text('Согласие дано · отозвать'),
-                        onTap: _withdrawAiConsent,
+                        leading: Icon(
+                          request == ConsentRequest.aiAssistant
+                              ? Icons.auto_awesome_outlined
+                              : Icons.photo_camera_outlined,
+                        ),
+                        title: Text(request.title),
+                        subtitle: Text(
+                          givenConsents.contains(request.document)
+                              ? 'Согласие дано · отозвать'
+                              : 'Согласие не дано · дать',
+                        ),
+                        trailing: IconButton(
+                          tooltip: 'Текст согласия',
+                          icon: const Icon(Icons.open_in_new_rounded, size: 18),
+                          onPressed: () =>
+                              openLegalPage(context, widget.api, request.page),
+                        ),
+                        onTap: () => _toggleConsent(request),
                       ),
                   ],
                 ),

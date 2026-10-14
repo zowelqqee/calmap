@@ -16,13 +16,16 @@ from app.schemas.tracking import (
     VisionConfirmRequest,
     VisionRecognizeOut,
 )
+from app.services.consent import require_consent
+from app.services.image_metadata import SUPPORTED_TYPES, UnsupportedImage, strip_metadata
 from app.services.vision import CatalogHint, get_vision_provider
 
 router = APIRouter(prefix="/vision", tags=["vision"])
 logger = logging.getLogger(__name__)
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
-ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/heic"}
+# Only types whose metadata (GPS, device) can be cut out before the photo is sent.
+ALLOWED_MIME = SUPPORTED_TYPES
 
 
 @router.post("/recognize", response_model=VisionRecognizeOut)
@@ -32,6 +35,8 @@ async def recognize(
     session: DbSession,
     image: UploadFile = File(...),
 ) -> VisionRecognizeOut:
+    # The provider may be abroad: a separate consent precedes the first photo.
+    await require_consent(session, user.id, "photo_recognition")
     if image.content_type not in ALLOWED_MIME:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "unsupported image type")
 
@@ -40,6 +45,11 @@ async def recognize(
     payload = await image.read(MAX_IMAGE_BYTES + 1)
     if len(payload) > MAX_IMAGE_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "image too large")
+    try:
+        # GPS coordinates, device and time from EXIF/XMP never reach the provider.
+        payload = strip_metadata(payload, image.content_type)
+    except UnsupportedImage:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "unsupported image type") from None
 
     # --- dedupe first: re-sending the same photo costs nothing, so it must not count
     # against the quota either. Checking the quota first would make a flaky upload

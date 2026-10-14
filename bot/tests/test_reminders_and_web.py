@@ -38,6 +38,22 @@ async def test_reminders_are_sent_once_per_period(env, linked_user):
     assert "PRO закончится" in env.sent[-1][1]
 
 
+async def test_reminders_can_be_turned_off(env, linked_user):
+    from calmap_bot.db import BotUser
+
+    until = (datetime.now(timezone.utc) + timedelta(hours=30)).isoformat()
+    env.backend.expiring_rows = [
+        {"telegram_user_id": linked_user, "state": "trial", "tier": "trial", "access_until": until}
+    ]
+    async with env.db.session() as session:
+        (await session.get(BotUser, linked_user)).reminders_enabled = False
+    assert await send_reminders(env.db, env.backend_client, env.billing.notify) == 0
+    async with env.db.session() as session:
+        (await session.get(BotUser, linked_user)).reminders_enabled = True
+    assert await send_reminders(env.db, env.backend_client, env.billing.notify) == 1
+    assert "/reminders_off" in env.sent[-1][1]
+
+
 async def test_webhook_rereads_the_payment_and_delivers(env, linked_user):
     await env.billing.start_checkout(linked_user, "pro")
     async with env.db.session() as session:

@@ -10,10 +10,14 @@ import 'package:http_parser/http_parser.dart';
 import 'local_store.dart';
 
 class ApiException implements Exception {
-  ApiException(this.statusCode, this.message);
+  ApiException(this.statusCode, this.message, {this.consentDocument});
 
   final int statusCode;
   final String message;
+
+  /// Set when the server needs a consent first (409 consent_required): the
+  /// document to ask for, e.g. "ai_assistant" or "photo_recognition".
+  final String? consentDocument;
 
   /// The tariff does not include the feature or its limit is used up.
   bool get isPaymentRequired => statusCode == 402;
@@ -606,6 +610,9 @@ class ApiClient {
       throw ApiException(
         response.statusCode,
         humanizeApiError(response.statusCode, detail),
+        consentDocument: detail is Map && detail['code'] == 'consent_required'
+            ? detail['document']?.toString()
+            : null,
       );
     }
     return _normalizeLocalUrls(decoded);

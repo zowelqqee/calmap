@@ -581,12 +581,26 @@ async def test_deleting_a_diary_entry(auth_client: AsyncClient):
 # --------------------------------------------------------------------------- vision
 
 
+JPEG_HEAD = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+
+
+def jpeg(body: bytes) -> bytes:
+    """A structurally valid JPEG: SOI, JFIF header, start of scan, data, EOI."""
+    return JPEG_HEAD + b"\xff\xda\x00\x02" + body + b"\xff\xd9"
+
+
 def fake_photo(seed: bytes = b"lunch") -> dict:
-    return {"image": ("meal.jpg", io.BytesIO(seed * 200), "image/jpeg")}
+    return {"image": ("meal.jpg", io.BytesIO(jpeg(seed * 200)), "image/jpeg")}
+
+
+async def ready_for_photos(client: AsyncClient) -> None:
+    await complete_onboarding(client)
+    consent = await client.post("/v1/me/consents", json={"document": "photo_recognition"})
+    assert consent.status_code == 201, consent.text
 
 
 async def test_vision_recognition_returns_editable_candidates(auth_client: AsyncClient):
-    await complete_onboarding(auth_client)
+    await ready_for_photos(auth_client)
     response = await auth_client.post("/v1/vision/recognize", files=fake_photo())
     assert response.status_code == 200, response.text
 
@@ -602,7 +616,7 @@ async def test_vision_recognition_returns_editable_candidates(auth_client: Async
 
 
 async def test_vision_rejects_non_images(auth_client: AsyncClient):
-    await complete_onboarding(auth_client)
+    await ready_for_photos(auth_client)
     response = await auth_client.post(
         "/v1/vision/recognize",
         files={"image": ("notes.txt", io.BytesIO(b"hello"), "text/plain")},
@@ -611,14 +625,14 @@ async def test_vision_rejects_non_images(auth_client: AsyncClient):
 
 
 async def test_identical_photo_is_not_charged_twice(auth_client: AsyncClient):
-    await complete_onboarding(auth_client)
+    await ready_for_photos(auth_client)
     first = await auth_client.post("/v1/vision/recognize", files=fake_photo(b"same"))
     second = await auth_client.post("/v1/vision/recognize", files=fake_photo(b"same"))
     assert first.json()["recognition_id"] == second.json()["recognition_id"]
 
 
 async def test_trial_photo_quota_is_enforced(auth_client: AsyncClient):
-    await complete_onboarding(auth_client)
+    await ready_for_photos(auth_client)
     for index in range(5):
         response = await auth_client.post(
             "/v1/vision/recognize", files=fake_photo(f"photo-{index}".encode())
@@ -632,7 +646,7 @@ async def test_trial_photo_quota_is_enforced(auth_client: AsyncClient):
 async def test_confirming_a_recognition_writes_the_diary_and_records_the_edit(
     auth_client: AsyncClient,
 ):
-    await complete_onboarding(auth_client)
+    await ready_for_photos(auth_client)
     recognition = (
         await auth_client.post("/v1/vision/recognize", files=fake_photo(b"confirm"))
     ).json()
@@ -789,11 +803,11 @@ async def test_new_weigh_in_recalculates_targets(auth_client: AsyncClient):
 async def test_production_refuses_stub_providers(auth_client: AsyncClient, monkeypatch):
     from app.core.config import settings
 
-    await complete_onboarding(auth_client)
+    await ready_for_photos(auth_client)
     monkeypatch.setattr(settings, "env", "production")
     photo = await auth_client.post(
         "/v1/vision/recognize",
-        files={"image": ("meal.jpg", b"\xff\xd8\xff-production-stub", "image/jpeg")},
+        files={"image": ("meal.jpg", jpeg(b"production-stub"), "image/jpeg")},
     )
     assert photo.status_code == 503
     assert "key" not in photo.text.lower()

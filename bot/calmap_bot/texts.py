@@ -110,13 +110,20 @@ PAID_ACCOUNT_MISSING = (
 REFUNDED = "Возврат оформлен, подписка отменена."
 
 
+REMINDERS_OFF_HINT = "\n\nОтключить напоминания: /reminders_off"
+REMINDERS_OFF = "Напоминания об окончании срока отключены. Включить снова: /reminders_on"
+REMINDERS_ON = "Напоминания об окончании срока включены: за 3 дня и за 1 день."
+
+
 def reminder(expiring_tier: str | None, is_trial: bool, until: datetime) -> str:
     if is_trial:
-        return f"Пробный период Calmap закончится {date(until)}. Оформить подписку: /pay"
-    return (
-        f"Подписка {(expiring_tier or '').upper()} закончится {date(until)}. "
-        "Продлить: /pay"
-    )
+        text = f"Пробный период Calmap закончится {date(until)}. Оформить подписку: /pay"
+    else:
+        text = (
+            f"Подписка {(expiring_tier or '').upper()} закончится {date(until)}. "
+            "Продлить: /pay"
+        )
+    return text + REMINDERS_OFF_HINT
 
 
 def help_text(support: str) -> str:
@@ -125,6 +132,7 @@ def help_text(support: str) -> str:
         "/start — привязать аккаунт Calmap по номеру телефона\n"
         "/pay — оплатить или продлить подписку\n"
         "/status — срок подписки\n"
+        "/reminders_off, /reminders_on — напоминания об окончании срока\n"
         "/forget — удалить номер телефона из бота"
         f"{contact}"
     )

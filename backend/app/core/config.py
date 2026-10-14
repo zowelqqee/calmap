@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     #: country (named in the AI consent; a foreign country means cross-border transfer).
     assistant_processor_name: str = ""
     assistant_processor_country: str = ""
+    #: Photo recognition processor named in its consent; empty — the same as the
+    #: AI consultant's (one provider for both is the usual setup).
+    vision_processor_name: str = ""
+    vision_processor_country: str = ""
 
     # /docs and /openapi.json are disabled in production unless explicitly enabled.
     expose_docs: bool = False

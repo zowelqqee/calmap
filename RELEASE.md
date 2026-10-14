@@ -32,6 +32,7 @@ openssl rand -hex 24          # пароли PostgreSQL
 | `BACKUP_PASSPHRASE` | пароль шифрования бэкапов; хранить также вне сервера |
 | `LEGAL_OPERATOR_NAME`, `LEGAL_CONTACT_EMAIL` | юрлицо/ИП и почта для обращений по персональным данным |
 | `ASSISTANT_PROCESSOR_NAME`, `ASSISTANT_PROCESSOR_COUNTRY` | кто и в какой стране обрабатывает запросы AI-консультанта (текст согласия) |
+| `VISION_PROCESSOR_NAME`, `VISION_PROCESSOR_COUNTRY` | то же для распознавания фото; пусто — как у AI-консультанта |
 
 Запуск с HTTPS и ежедневным бэкапом:
 

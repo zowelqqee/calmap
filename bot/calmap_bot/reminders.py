@@ -10,7 +10,7 @@ from sqlalchemy import select
 from calmap_bot import texts
 from calmap_bot.backend import BackendError, CalmapBackend
 from calmap_bot.billing import Notify
-from calmap_bot.db import Database, Reminder
+from calmap_bot.db import BotUser, Database, Reminder
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,10 @@ async def send_reminders(db: Database, backend: CalmapBackend, notify: Notify) -
         if kind is None:
             continue
         async with db.session() as session:
+            # Only users who are linked in the bot and did not turn reminders off.
+            user = await session.get(BotUser, item.telegram_user_id)
+            if user is None or not user.reminders_enabled:
+                continue
             exists = await session.scalar(
                 select(Reminder.id).where(
                     Reminder.telegram_user_id == item.telegram_user_id,
