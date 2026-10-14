@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
 from app.db.models import MealPlan, MealPlanDay, MealPlanItem, Recipe
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, engine
 
 logger = logging.getLogger(__name__)
 
@@ -172,47 +172,58 @@ async def run_recipe_image_job(
         return 0
 
     target_date = run_date or datetime.now(MOSCOW).date()
-    async with session_factory() as session:
-        locked = await session.scalar(
+    # The advisory lock is session-level, so it must live on one dedicated connection
+    # for the whole run: the ORM session hands its connection back to the pool on
+    # every commit, and unlocking from another connection would leave it held forever.
+    lock_engine = session_factory.kw.get("bind") or engine
+    async with lock_engine.connect() as lock_connection:
+        locked = await lock_connection.scalar(
             text("SELECT pg_try_advisory_lock(:key)"), {"key": JOB_LOCK_KEY}
         )
         if not locked:
             logger.info("recipe image job skipped: another worker owns the lock")
             return 0
         try:
-            recipes = await _recipes_for_plans(session, target_date)
-            recipe_ids = [recipe.id for recipe in recipes]
-            generated = 0
-            for recipe_id in recipe_ids:
-                try:
-                    recipe = await session.get(Recipe, recipe_id)
-                    if recipe is None or recipe.image_url is not None:
-                        continue
-                    image = await provider.generate(recipe)
-                    if not image.data:
-                        raise RuntimeError("recipe image provider returned an empty image")
-                    recipe.image_url = _persist_image(recipe, image)
-                    await session.commit()
-                    generated += 1
-                    logger.info("generated recipe image: %s", recipe.slug)
-                except httpx.HTTPStatusError as exc:
-                    status_code = exc.response.status_code
-                    if status_code in {401, 403}:
-                        logger.error(
-                            "image generation stopped: the provider rejected access "
-                            "(HTTP %s); check API billing, project access, and key",
-                            status_code,
-                        )
-                        return generated
-                    logger.exception("recipe image generation failed: %s", recipe_id)
-                except Exception:
-                    await session.rollback()
-                    logger.exception("recipe image generation failed: %s", recipe_id)
-            return generated
+            async with session_factory() as session:
+                return await _generate_missing(session, provider, target_date)
         finally:
-            await session.execute(
+            await lock_connection.execute(
                 text("SELECT pg_advisory_unlock(:key)"), {"key": JOB_LOCK_KEY}
             )
+
+
+async def _generate_missing(
+    session: AsyncSession, provider: RecipeImageProvider, target_date: date
+) -> int:
+    recipes = await _recipes_for_plans(session, target_date)
+    recipe_ids = [recipe.id for recipe in recipes]
+    generated = 0
+    for recipe_id in recipe_ids:
+        try:
+            recipe = await session.get(Recipe, recipe_id)
+            if recipe is None or recipe.image_url is not None:
+                continue
+            image = await provider.generate(recipe)
+            if not image.data:
+                raise RuntimeError("recipe image provider returned an empty image")
+            recipe.image_url = _persist_image(recipe, image)
+            await session.commit()
+            generated += 1
+            logger.info("generated recipe image: %s", recipe.slug)
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code in {401, 403}:
+                logger.error(
+                    "image generation stopped: the provider rejected access "
+                    "(HTTP %s); check API billing, project access, and key",
+                    status_code,
+                )
+                return generated
+            logger.exception("recipe image generation failed: %s", recipe_id)
+        except Exception:
+            await session.rollback()
+            logger.exception("recipe image generation failed: %s", recipe_id)
+    return generated
 
 
 def _seconds_until_next_run(now: datetime) -> float:

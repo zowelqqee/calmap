@@ -3,12 +3,20 @@ from __future__ import annotations
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(min_length=8, max_length=72)
+
+    @field_validator("password")
+    @classmethod
+    def fits_bcrypt(cls, value: str) -> str:
+        # bcrypt only accepts 72 bytes; Cyrillic characters take two bytes each.
+        if len(value.encode()) > 72:
+            raise ValueError("password is too long")
+        return value
 
 
 class LoginRequest(BaseModel):
@@ -25,6 +33,8 @@ class OAuthRequest(BaseModel):
     """
 
     id_token: str
+    #: Accepted for backwards compatibility and ignored: only the email verified by
+    #: the provider is trusted.
     email: EmailStr | None = None
 
 

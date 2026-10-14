@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
@@ -15,8 +15,97 @@ class ApiException implements Exception {
   final int statusCode;
   final String message;
 
+  /// The tariff does not include the feature or its limit is used up.
+  bool get isPaymentRequired => statusCode == 402;
+
   @override
   String toString() => message;
+}
+
+/// API base URL compiled into the build. Release builds must receive it through
+/// `--dart-define-from-file=config/production.json`; only debug builds fall back
+/// to a local backend.
+String configuredBaseUrl() {
+  const configured = String.fromEnvironment('API_BASE_URL');
+  if (configured.isNotEmpty) return configured;
+  if (kReleaseMode) {
+    throw StateError(
+      'API_BASE_URL is not set: build with --dart-define-from-file=config/production.json',
+    );
+  }
+  return 'http://localhost:8000';
+}
+
+/// Russian text for the backend's machine-oriented error details.
+String humanizeApiError(int statusCode, dynamic detail) {
+  if (detail is List) {
+    // FastAPI validation errors: [{loc: [...], msg: ...}, ...]
+    return 'Проверьте введённые данные';
+  }
+  final text = detail?.toString() ?? '';
+  const known = <String, String>{
+    'invalid credentials': 'Неверный email или пароль',
+    'email already registered':
+        'Этот email уже зарегистрирован. Войдите в аккаунт',
+    'token expired': 'Сессия истекла. Войдите снова',
+    'invalid token': 'Сессия недействительна. Войдите снова',
+    'invalid refresh token': 'Сессия истекла. Войдите снова',
+    'missing bearer token': 'Войдите в аккаунт',
+    'user not found': 'Аккаунт не найден. Войдите снова',
+    'no plan for this date': 'На эту дату рациона нет',
+    'plan not found': 'Рацион не найден',
+    'recipe not found': 'Рецепт не найден',
+    'no targets computed yet': 'Нормы ещё не рассчитаны: завершите анкету',
+    'compute targets first': 'Нормы ещё не рассчитаны: завершите анкету',
+    'image too large': 'Фото слишком большое (максимум 8 МБ)',
+    'unsupported image type': 'Формат фото не поддерживается',
+    'no items confirmed': 'Отметьте хотя бы один продукт из каталога',
+    'nothing logged for that meal': 'В этот приём пищи ничего не записано',
+    'AI consultation requires the pro plan':
+        'AI-консультант доступен на тарифе PRO',
+    'photo recognition is temporarily unavailable':
+        'Распознавание фото временно недоступно. Попробуйте позже',
+    'AI consultation is temporarily unavailable':
+        'AI-консультант временно недоступен. Попробуйте позже',
+    'unsupported provider': 'Этот способ входа недоступен',
+  };
+  for (final entry in known.entries) {
+    if (text.startsWith(entry.key)) return entry.value;
+  }
+  if (text.startsWith('daily photo limit reached')) {
+    return 'Лимит распознаваний на сегодня исчерпан. Больше фото — на тарифах BASE и PRO';
+  }
+  if (text.startsWith('monthly assistant limit reached')) {
+    return 'Лимит сообщений AI-консультанту на этот месяц исчерпан';
+  }
+  if (text.startsWith('onboarding is not complete')) {
+    return 'Завершите анкету, чтобы продолжить';
+  }
+  if (text.startsWith('subscription is not active')) {
+    return 'Тариф неактивен. Продлите доступ в профиле';
+  }
+  if (text.startsWith('too many') || statusCode == 429) {
+    return 'Слишком много попыток. Повторите через минуту';
+  }
+  if (text.startsWith('invalid OAuth') ||
+      text.contains('identity verification failed') ||
+      text.contains('rejected the access token')) {
+    return 'Не удалось подтвердить вход через внешний сервис';
+  }
+  if (text.contains('_CLIENT_ID is not configured')) {
+    return 'Этот способ входа пока не подключён';
+  }
+  // Messages written for people (Russian) pass through unchanged.
+  if (RegExp('[а-яА-ЯёЁ]').hasMatch(text)) return text;
+  return switch (statusCode) {
+    401 => 'Сессия истекла. Войдите снова',
+    402 => 'Функция доступна на платном тарифе',
+    403 => 'Недостаточно прав',
+    404 => 'Данные не найдены',
+    409 => 'Действие сейчас недоступно. Обновите экран',
+    >= 500 => 'Сервер временно недоступен. Попробуйте позже',
+    _ => 'Не удалось выполнить запрос',
+  };
 }
 
 class ApiClient {
@@ -25,13 +114,7 @@ class ApiClient {
     FlutterSecureStorage? storage,
     http.Client? client,
     LocalStore? localStore,
-  }) : baseUrl =
-           (baseUrl ??
-                   const String.fromEnvironment(
-                     'API_BASE_URL',
-                     defaultValue: 'http://localhost:8000',
-                   ))
-               .replaceAll(RegExp(r'/$'), ''),
+  }) : baseUrl = (baseUrl ?? configuredBaseUrl()).replaceAll(RegExp(r'/$'), ''),
        _storage = storage ?? _defaultStorage,
        _client = client ?? http.Client(),
        _localStore = localStore ?? LocalStore();
@@ -49,8 +132,14 @@ class ApiClient {
   final http.Client _client;
   final LocalStore _localStore;
   bool _flushingOutbox = false;
+  Future<bool>? _refreshing;
 
-  static const _networkTimeout = Duration(seconds: 12);
+  /// Called once when the session can no longer be refreshed (expired, revoked or
+  /// deleted account). The app returns to the sign-in screen.
+  VoidCallback? onSessionExpired;
+
+  static const _networkTimeout = Duration(seconds: 15);
+  static const _slowTimeout = Duration(seconds: 75);
 
   String? _accessToken;
   String? _refreshToken;
@@ -79,10 +168,8 @@ class ApiClient {
     await _localStore.clear();
   }
 
-  Future<void> savePlanId(String id) =>
-      _storage.write(key: 'plan_id', value: id);
-
-  Future<String?> readPlanId() => _storage.read(key: 'plan_id');
+  /// Offline changes not yet delivered to the server.
+  Future<int> pendingChanges() async => (await _localStore.outbox).length;
 
   Future<bool> hasSeenIntro() async =>
       await _storage.read(key: 'intro_seen') == 'true';
@@ -122,18 +209,55 @@ class ApiClient {
   Future<Map<String, dynamic>> post(
     String path, [
     Map<String, dynamic>? body,
-  ]) => _mutate('POST', path, body ?? {});
+  ]) async {
+    final decoded = await _mutate('POST', path, body ?? {});
+    if (decoded is! Map) throw ApiException(500, 'Некорректный ответ сервера');
+    return Map<String, dynamic>.from(decoded);
+  }
 
-  Future<Map<String, dynamic>> patch(String path, Map<String, dynamic> body) =>
-      _mutate('PATCH', path, body);
+  /// POST for endpoints that answer with a list.
+  Future<List<dynamic>> postList(
+    String path, [
+    Map<String, dynamic>? body,
+  ]) async {
+    final decoded = await _mutate('POST', path, body ?? {});
+    if (decoded is! List) throw ApiException(500, 'Некорректный ответ сервера');
+    return decoded;
+  }
 
-  Future<Map<String, dynamic>> delete(String path) =>
-      _mutate('DELETE', path, null);
+  Future<Map<String, dynamic>> patch(
+    String path,
+    Map<String, dynamic> body,
+  ) async {
+    final decoded = await _mutate('PATCH', path, body);
+    if (decoded is! Map) throw ApiException(500, 'Некорректный ответ сервера');
+    return Map<String, dynamic>.from(decoded);
+  }
+
+  Future<Map<String, dynamic>> delete(String path) async {
+    final decoded = await _mutate('DELETE', path, null);
+    return decoded is Map ? Map<String, dynamic>.from(decoded) : {};
+  }
+
+  /// Permanently deletes the account on the server, then all local data.
+  Future<void> deleteAccount() async {
+    await _mutate('DELETE', '/v1/auth/me', null);
+    await clearSession();
+  }
 
   Future<Map<String, dynamic>> uploadImage({
     required Uint8List bytes,
     required String filename,
   }) async {
+    final lower = filename.toLowerCase();
+    final subtype = lower.endsWith('.png')
+        ? 'png'
+        : lower.endsWith('.webp')
+        ? 'webp'
+        : lower.endsWith('.heic')
+        ? 'heic'
+        : 'jpeg';
+
     Future<http.Response> send() async {
       final request = http.MultipartRequest(
         'POST',
@@ -147,31 +271,36 @@ class ApiClient {
           'image',
           bytes,
           filename: filename,
-          contentType: MediaType('image', 'jpeg'),
+          contentType: MediaType('image', subtype),
         ),
       );
-      return http.Response.fromStream(await request.send());
+      final streamed = await _client.send(request).timeout(_slowTimeout);
+      return http.Response.fromStream(streamed).timeout(_slowTimeout);
     }
 
-    var response = await send();
-    if (response.statusCode == 401 && await _refresh()) response = await send();
-    final decoded = _decode(response);
-    if (decoded is! Map) {
-      throw ApiException(500, 'Некорректный ответ распознавания');
+    try {
+      var response = await send();
+      if (response.statusCode == 401) {
+        if (await _refresh()) {
+          response = await send();
+        } else {
+          _expireSession();
+        }
+      }
+      final decoded = _decode(response);
+      if (decoded is! Map) {
+        throw ApiException(500, 'Некорректный ответ распознавания');
+      }
+      return Map<String, dynamic>.from(decoded);
+    } catch (error) {
+      if (_isConnectivityError(error)) {
+        throw ApiException(
+          0,
+          'Нет связи с сервером. Повторите, когда появится интернет.',
+        );
+      }
+      rethrow;
     }
-    return Map<String, dynamic>.from(decoded);
-  }
-
-  Future<Map<String, dynamic>> _request(
-    String method,
-    Uri uri,
-    Map<String, dynamic>? body, {
-    required bool retry,
-  }) async {
-    final response = await _send(method, uri, body, retry: retry);
-    final decoded = _decode(response);
-    if (decoded is! Map) throw ApiException(500, 'Некорректный ответ API');
-    return Map<String, dynamic>.from(decoded);
   }
 
   Future<dynamic> _getDecoded(String path, {Map<String, String>? query}) async {
@@ -185,43 +314,58 @@ class ApiClient {
       if (_cacheable(path)) await _localStore.writeResponse(cacheKey, decoded);
       return decoded;
     } catch (error) {
-      if (_cacheable(path) && _isConnectivityError(error)) {
-        final cached = await _localStore.readResponse(cacheKey);
-        if (cached != null) return cached;
+      if (_isConnectivityError(error)) {
+        if (_cacheable(path)) {
+          final cached = await _localStore.readResponse(cacheKey);
+          if (cached != null) return cached;
+        }
+        throw ApiException(0, 'Нет связи с сервером. Проверьте интернет.');
       }
       rethrow;
     }
   }
 
-  Future<Map<String, dynamic>> _mutate(
+  Future<dynamic> _mutate(
     String method,
     String path,
     Map<String, dynamic>? body,
   ) async {
     await _flushOutbox();
     try {
-      return await _request(
+      final response = await _send(
         method,
         Uri.parse('$baseUrl$path'),
         body,
         retry: true,
       );
+      return _decode(response);
+    } on TimeoutException {
+      // The request may have reached the server; replaying it could duplicate data.
+      throw ApiException(
+        0,
+        'Сервер не ответил вовремя. Обновите экран и проверьте, сохранилось ли изменение.',
+      );
     } catch (error) {
       if (_isConnectivityError(error)) {
-        if (_queueableMutation(path)) {
+        if (_queueableMutation(method, path)) {
           await _localStore.enqueue(method: method, path: path, body: body);
+          throw ApiException(
+            0,
+            'Нет связи. Изменение сохранено на устройстве и отправится автоматически.',
+          );
         }
         throw ApiException(
           0,
-          _queueableMutation(path)
-              ? 'Нет связи. Изменение сохранено на устройстве и отправится автоматически.'
-              : 'Нет связи с сервером. Повторите действие, когда интернет появится.',
+          'Нет связи с сервером. Повторите действие, когда интернет появится.',
         );
       }
       rethrow;
     }
   }
 
+  /// Replays offline changes in order. A change the server permanently rejects
+  /// (4xx) is dropped so it cannot block everything queued after it; network
+  /// failures and 5xx keep it for the next attempt.
   Future<void> _flushOutbox() async {
     if (_flushingOutbox || _accessToken == null) return;
     _flushingOutbox = true;
@@ -239,10 +383,16 @@ class ApiClient {
             body,
             retry: true,
           );
-          _decode(response);
+          final status = response.statusCode;
+          final retryLater =
+              status >= 500 || status == 401 || status == 408 || status == 429;
+          if (retryLater) break;
+          if (status >= 400) {
+            debugPrint('Dropping rejected offline change $method $path');
+          }
           await _localStore.removeFirstOutboxItem();
         } catch (_) {
-          // Preserve ordering: retry the remaining operations next time.
+          // Still offline: keep the order and retry on the next request.
           break;
         }
       }
@@ -261,18 +411,29 @@ class ApiClient {
 
   bool _cacheable(String path) => path.startsWith('/v1/');
 
-  bool _queueableMutation(String path) =>
-      path.startsWith('/v1/onboarding/') ||
-      path.startsWith('/v1/diary/') ||
-      path.startsWith('/v1/workouts/') ||
-      path.startsWith('/v1/progress/') ||
-      path.startsWith('/v1/catalog/recipes/') ||
-      path == '/v1/auth/me';
+  /// Offline queue: only changes that are safe to apply later. Plan generation,
+  /// onboarding completion, payments, chat and photo recognition need the server
+  /// right away and are never queued.
+  bool _queueableMutation(String method, String path) {
+    if (path == '/v1/onboarding/complete') return false;
+    if (path.startsWith('/v1/onboarding/')) return method == 'PATCH';
+    return path.startsWith('/v1/diary/') ||
+        path.startsWith('/v1/workouts/') ||
+        path.startsWith('/v1/progress/') ||
+        path.startsWith('/v1/catalog/recipes/') ||
+        (path == '/v1/auth/me' && method == 'PATCH');
+  }
 
   bool _isConnectivityError(Object error) =>
       error is SocketException ||
       error is TimeoutException ||
-      error is http.ClientException;
+      error is http.ClientException ||
+      error is HandshakeException;
+
+  Duration _timeoutFor(String path) =>
+      path.startsWith('/v1/assistant/') || path.startsWith('/v1/vision/')
+      ? _slowTimeout
+      : _networkTimeout;
 
   Future<http.Response> _send(
     String method,
@@ -282,51 +443,54 @@ class ApiClient {
   }) async {
     final headers = <String, String>{'Content-Type': 'application/json'};
     if (_accessToken != null) headers['Authorization'] = 'Bearer $_accessToken';
-    http.Response response;
-    switch (method) {
-      case 'POST':
-        response = await _client
-            .post(uri, headers: headers, body: jsonEncode(body))
-            .timeout(_networkTimeout);
-        break;
-      case 'PATCH':
-        response = await _client
-            .patch(uri, headers: headers, body: jsonEncode(body))
-            .timeout(_networkTimeout);
-        break;
-      case 'DELETE':
-        response = await _client
-            .delete(uri, headers: headers)
-            .timeout(_networkTimeout);
-        break;
-      default:
-        response = await _client
-            .get(uri, headers: headers)
-            .timeout(_networkTimeout);
-        break;
-    }
-    if (response.statusCode == 401 && retry && await _refresh()) {
-      return _send(method, uri, body, retry: false);
+    final timeout = _timeoutFor(uri.path);
+    final response = await switch (method) {
+      'POST' => _client.post(uri, headers: headers, body: jsonEncode(body)),
+      'PATCH' => _client.patch(uri, headers: headers, body: jsonEncode(body)),
+      'DELETE' => _client.delete(uri, headers: headers),
+      _ => _client.get(uri, headers: headers),
+    }.timeout(timeout);
+    if (response.statusCode == 401 && retry && _refreshToken != null) {
+      if (await _refresh()) return _send(method, uri, body, retry: false);
+      _expireSession();
     }
     return response;
   }
 
-  Future<bool> _refresh() async {
-    if (_refreshToken == null) return false;
+  /// One refresh at a time: parallel 401s from several tabs share the same call.
+  Future<bool> _refresh() {
+    return _refreshing ??= _doRefresh().whenComplete(() => _refreshing = null);
+  }
+
+  Future<bool> _doRefresh() async {
+    final token = _refreshToken;
+    if (token == null) return false;
     try {
-      final response = await _client.post(
-        Uri.parse('$baseUrl/v1/auth/refresh'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'refresh_token': _refreshToken}),
-      );
+      final response = await _client
+          .post(
+            Uri.parse('$baseUrl/v1/auth/refresh'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'refresh_token': token}),
+          )
+          .timeout(_networkTimeout);
       if (response.statusCode < 200 || response.statusCode >= 300) return false;
       await saveTokens(
         Map<String, dynamic>.from(jsonDecode(response.body) as Map),
       );
       return true;
-    } catch (_) {
+    } catch (error) {
+      // Offline is not an expired session: keep the tokens for later.
+      if (_isConnectivityError(error)) {
+        throw ApiException(0, 'Нет связи с сервером. Проверьте интернет.');
+      }
       return false;
     }
+  }
+
+  void _expireSession() {
+    if (_accessToken == null) return;
+    final callback = onSessionExpired;
+    clearSession().whenComplete(() => callback?.call());
   }
 
   dynamic _decode(http.Response response) {
@@ -342,7 +506,7 @@ class ApiClient {
       final detail = decoded is Map ? decoded['detail'] : null;
       throw ApiException(
         response.statusCode,
-        detail?.toString() ?? 'Ошибка API ${response.statusCode}',
+        humanizeApiError(response.statusCode, detail),
       );
     }
     return _normalizeLocalUrls(decoded);

@@ -53,23 +53,33 @@ class OpenAICompatibleVisionProvider:
             )
             response.raise_for_status()
             body = response.json()
-        content = body.get("choices", [{}])[0].get("message", {}).get("content", "")
+        try:
+            content = body["choices"][0]["message"].get("content", "")
+        except (KeyError, IndexError, TypeError, AttributeError):
+            content = ""
         if isinstance(content, list):
             content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
         try:
             parsed = json.loads(content)
         except (TypeError, ValueError, json.JSONDecodeError):
             parsed = {}
+        if not isinstance(parsed, dict):
+            parsed = {}
         known = {c.slug for c in catalog}
         candidates = []
         for item in parsed.get("items", []):
-            if item.get("slug") not in known:
+            if not isinstance(item, dict) or item.get("slug") not in known:
+                continue
+            try:
+                grams = max(1.0, float(item.get("grams", 0)))
+                confidence = min(1.0, max(0.0, float(item.get("confidence", 0.5))))
+            except (TypeError, ValueError):
                 continue
             candidates.append(
                 RawCandidate(
                     slug=item["slug"],
-                    grams=max(1.0, float(item.get("grams", 0))),
-                    confidence=min(1.0, max(0.0, float(item.get("confidence", 0.5)))),
+                    grams=grams,
+                    confidence=confidence,
                     alternatives=[a for a in item.get("alternatives", []) if a in known][:3],
                 )
             )

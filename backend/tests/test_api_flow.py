@@ -7,7 +7,7 @@ diary → photo recognition. If this passes, the product's spine works.
 from __future__ import annotations
 
 import io
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -35,6 +35,16 @@ async def test_health(client: AsyncClient):
     response = await client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.json()["database"] == "ok"
+
+
+@pytest.mark.parametrize("page", ["privacy", "terms"])
+async def test_legal_pages_are_public_html(client: AsyncClient, page: str):
+    response = await client.get(f"/legal/{page}")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "<h1>" in response.text and "{operator}" not in response.text
+    assert (await client.get("/legal/unknown")).status_code == 404
 
 
 async def test_register_rejects_duplicate_email(client: AsyncClient):
@@ -674,3 +684,144 @@ async def test_pro_tier_assistant_and_retail_offers(auth_client: AsyncClient):
     assert offer["price_type"] == "estimate"
     assert offer["retailer"] == "Пятёрочка"
     assert offer["available"] is None
+
+
+async def test_billing_webhook_rejects_wrong_amount_and_foreign_provider(auth_client: AsyncClient):
+    checkout = await auth_client.post("/v1/billing/checkout", json={"tier": "pro"})
+    payment_id = checkout.json()["payment_id"]
+    tampered = await auth_client.post(
+        "/v1/billing/webhooks/stub",
+        json={
+            "id": "stub-event-underpaid",
+            "event": "payment.succeeded",
+            "object": {
+                "id": f"stub-{payment_id}",
+                "status": "succeeded",
+                "amount": {"value": "1.00", "currency": "RUB"},
+                "metadata": {"payment_id": payment_id},
+            },
+        },
+    )
+    assert tampered.status_code == 200
+    assert (await auth_client.get("/v1/me/entitlements")).json()["tier"] == "free"
+
+    # A provider that is not configured cannot be used to deliver events at all.
+    foreign = await auth_client.post("/v1/billing/webhooks/yookassa", json={"object": {}})
+    assert foreign.status_code == 404
+
+
+async def test_repeat_purchase_extends_remaining_period(auth_client: AsyncClient):
+    ends = []
+    for index in range(2):
+        checkout = await auth_client.post("/v1/billing/checkout", json={"tier": "base"})
+        payment_id = checkout.json()["payment_id"]
+        response = await auth_client.post(
+            "/v1/billing/webhooks/stub",
+            json={
+                "id": f"stub-extend-{payment_id}",
+                "event": "payment.succeeded",
+                "object": {
+                    "id": f"stub-{payment_id}",
+                    "status": "succeeded",
+                    "amount": {"value": "299.00", "currency": "RUB"},
+                    "metadata": {"payment_id": payment_id},
+                },
+            },
+        )
+        assert response.json()["processed"] is True
+        subscription = (await auth_client.get("/v1/billing/subscription")).json()
+        assert subscription["tier"] == "base"
+        assert subscription["auto_renew"] is False
+        ends.append(datetime.fromisoformat(subscription["current_period_end"]))
+    assert (ends[1] - ends[0]).days == 30
+
+
+async def test_account_deletion_removes_user_and_invalidates_tokens(auth_client: AsyncClient):
+    await complete_onboarding(auth_client)
+    assert (await auth_client.get("/v1/auth/me")).status_code == 200
+
+    deleted = await auth_client.delete("/v1/auth/me")
+    assert deleted.status_code == 204
+    assert (await auth_client.get("/v1/auth/me")).status_code == 401
+
+
+async def test_malformed_token_subject_is_401_not_500(client: AsyncClient):
+    from app.core.security import create_access_token, create_refresh_token
+
+    client.headers["Authorization"] = f"Bearer {create_access_token('not-a-uuid')}"
+    assert (await client.get("/v1/auth/me")).status_code == 401
+    refreshed = await client.post(
+        "/v1/auth/refresh", json={"refresh_token": create_refresh_token("not-a-uuid")}
+    )
+    assert refreshed.status_code == 401
+
+
+async def test_oauth_ignores_client_supplied_email(client: AsyncClient):
+    victim = f"victim-{date.today().isoformat()}-{id(client)}@example.com"
+    registered = await client.post(
+        "/v1/auth/register", json={"email": victim, "password": "correct-horse-battery"}
+    )
+    victim_token = registered.json()["access_token"]
+    victim_id = (
+        await client.get("/v1/auth/me", headers={"Authorization": f"Bearer {victim_token}"})
+    ).json()["id"]
+
+    attacker = await client.post(
+        "/v1/auth/oauth/google", json={"id_token": "test:attacker", "email": victim}
+    )
+    assert attacker.status_code == 200
+    attacker_me = await client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {attacker.json()['access_token']}"}
+    )
+    assert attacker_me.json()["id"] != victim_id
+    assert attacker_me.json()["email"] is None
+
+
+async def test_auth_endpoints_are_rate_limited(client: AsyncClient, monkeypatch):
+    from app.core import rate_limit
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "auth_rate_limit_per_minute", 3)
+    rate_limit.reset()
+    statuses = [
+        (await client.post(
+            "/v1/auth/login", json={"email": "nobody@example.com", "password": "wrong-pass"}
+        )).status_code
+        for _ in range(4)
+    ]
+    rate_limit.reset()
+    assert statuses == [401, 401, 401, 429]
+
+
+async def test_peanut_and_seafood_allergies_exclude_catalogue_dishes(auth_client: AsyncClient):
+    for step, payload in ONBOARDING_STEPS:
+        if step == "restrictions":
+            payload = {**payload, "allergens": ["peanut", "seafood"]}
+        response = await auth_client.patch(f"/v1/onboarding/{step}", json=payload)
+        assert response.status_code == 200, response.text
+    result = (await auth_client.post("/v1/onboarding/complete")).json()
+    plan = (await auth_client.get(f"/v1/meal-plans/{result['plan_id']}")).json()
+    slugs = {item["recipe_slug"] for day in plan["days"] for item in day["items"]}
+    assert "oats_banana_pb" not in slugs
+    assert not {s for s in slugs if s.startswith("shrimp_")}
+
+
+async def test_unknown_allergen_is_rejected(auth_client: AsyncClient):
+    response = await auth_client.patch(
+        "/v1/onboarding/restrictions", json={"diet": "omnivore", "allergens": ["пыльца"]}
+    )
+    assert response.status_code == 422
+
+
+async def test_new_weigh_in_recalculates_targets(auth_client: AsyncClient):
+    await complete_onboarding(auth_client)
+    before = (await auth_client.get("/v1/me/targets")).json()
+    added = await auth_client.post(
+        "/v1/progress/entries", json={"day": date.today().isoformat(), "weight_kg": 60}
+    )
+    assert added.status_code == 201, added.text
+    after = (await auth_client.get("/v1/me/targets")).json()
+    assert after["bmr_kcal"] < before["bmr_kcal"]
+    overview = (await auth_client.get("/v1/progress/overview")).json()
+    assert overview["current_weight_kg"] == 60
+    assert overview["start_weight_kg"] != 60

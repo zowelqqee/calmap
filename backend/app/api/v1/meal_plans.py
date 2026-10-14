@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import CurrentProfile, CurrentUser, DbSession, NutritionSubscription
 from app.db.models import MealPlan, MealPlanDay, MealPlanItem, ProgressEntry, Recipe
+from app.domain.allergens import catalogue_exclusions
 from app.domain.enums import MealType
 from app.domain.solver import DayTargets, MenuRequest, build_day
 from app.services.catalog import load_recipe_candidates
@@ -291,7 +292,9 @@ async def swap_item(
     }
     rejected = slug_by_id[item.recipe_id]
 
-    candidates = await load_recipe_candidates(session, user.region_code, day_row.day)
+    candidates = await load_recipe_candidates(
+        session, user.region_code, day_row.day, frozenset(profile.excluded_product_ids or [])
+    )
     day_budget = day_row.cost if plan.budget_total is None else plan.budget_total / max(
         1, len(plan.days)
     )
@@ -305,7 +308,7 @@ async def swap_item(
         budget_per_day=day_budget if plan.budget_total is not None else None,
         meal_slots=slots,
         diet=profile.diet,
-        excluded_allergens=frozenset(profile.allergens or []),
+        excluded_allergens=catalogue_exclusions(profile.allergens),
         excluded_recipe_ids=frozenset({rejected}),
     )
     new_day = build_day(candidates, request, locked=locked)

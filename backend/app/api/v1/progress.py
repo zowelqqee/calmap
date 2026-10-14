@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import uuid
 from datetime import date, timedelta
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
 
 from app.api.deps import CurrentProfile, CurrentUser, DbSession
-from app.db.models import DiaryEntry, ProgressEntry, Workout
+from app.db.models import DiaryEntry, ProgressEntry, UserProfile, Workout
+from app.services.planning import latest_weight, store_targets, targets_for_profile
 from app.schemas.wellness import (
     ProgressEntryCreate, ProgressEntryOut, ProgressOverviewOut, ProgressReportOut,
 )
@@ -83,13 +85,19 @@ async def add_entry(
     row.waist_cm = payload.waist_cm
     row.note = payload.note
     await session.flush()
+
+    # A new latest weigh-in moves the energy targets with the body they describe.
+    profile = await session.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
+    if profile is not None and await latest_weight(session, user.id) == payload.weight_kg:
+        await store_targets(
+            session, user.id, targets_for_profile(profile, weight_kg=payload.weight_kg)
+        )
     return _entry(row)
 
 
 @router.delete("/entries/{entry_id}", response_model=dict)
 async def delete_entry(entry_id: str, user: CurrentUser, session: DbSession) -> dict:
     try:
-        import uuid
         key = uuid.UUID(entry_id)
     except ValueError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "entry not found") from None

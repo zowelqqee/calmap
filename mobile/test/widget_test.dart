@@ -10,7 +10,9 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(
         theme: buildTheme(),
-        home: IntroScreen(onCompleted: () async => completed = true),
+        home: IntroScreen(
+          onCompleted: ({required bool register}) async => completed = register,
+        ),
       ),
     );
 

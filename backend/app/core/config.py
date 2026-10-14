@@ -15,6 +15,17 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://localhost:5432/calmap"
 
+    # Per-IP attempts per minute on register/login/oauth/refresh; 0 disables.
+    auth_rate_limit_per_minute: int = 20
+
+    # Public legal pages (/legal/privacy, /legal/terms). The operator details are
+    # required by 152-FZ and by the app stores; they are not invented in code.
+    legal_operator_name: str = ""
+    legal_contact_email: str = ""
+
+    # /docs and /openapi.json are disabled in production unless explicitly enabled.
+    expose_docs: bool = False
+
     access_token_ttl_minutes: int = 30
     refresh_token_ttl_days: int = 60
 
@@ -82,6 +93,10 @@ class Settings(BaseSettings):
     retail_parse_api_key: str = ""
     retail_parse_5ka_scraper_id: str = ""
     retail_parse_5ka_store_id: str = ""
+
+    # Calendar days ("today", daily quotas, plan dates) follow this zone for both the
+    # process (TZ) and Postgres sessions.
+    app_timezone: str = "Europe/Moscow"
 
     default_region_code: str = "RU-MOW"
     default_currency: str = "RUB"

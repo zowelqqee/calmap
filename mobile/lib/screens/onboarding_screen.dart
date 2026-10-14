@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../core/api_client.dart';
 import '../core/city_catalog.dart';
+import '../core/legal.dart';
 import '../core/theme.dart';
 
 class OnboardingScreen extends StatefulWidget {
@@ -35,11 +36,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   String goal = 'maintain';
   final targetWeight = TextEditingController();
   final selectedAllergens = <String>{};
-  final customAllergen = TextEditingController();
   String budgetType = 'fixed_week';
   final budget = TextEditingController(text: '3500');
   String activity = 'medium';
   String workoutLocation = 'home';
+  String diet = 'omnivore';
+  bool healthConsent = false;
+
+  static const diets = <String, String>{
+    'omnivore': 'Без ограничений',
+    'no_pork': 'Без свинины',
+    'pescatarian': 'Рыба без мяса',
+    'vegetarian': 'Вегетарианское',
+    'vegan': 'Веганское',
+  };
 
   static const allergens = <String, String>{
     'gluten': 'Глютен',
@@ -78,14 +88,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   @override
   void dispose() {
-    for (final controller in [
-      age,
-      height,
-      weight,
-      targetWeight,
-      customAllergen,
-      budget,
-    ]) {
+    for (final controller in [age, height, weight, targetWeight, budget]) {
       controller.dispose();
     }
     super.dispose();
@@ -120,6 +123,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         payload['workout_location'] as Map? ?? const {},
       );
       if (personal.isNotEmpty) {
+        healthConsent = true;
         sex = personal['sex']?.toString() ?? sex;
         if (personal['age'] != null) age.text = personal['age'].toString();
         if (personal['birth_date'] != null && personal['age'] == null) {
@@ -136,6 +140,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         targetWeight.text = goalData['target_weight_kg']?.toString() ?? '';
       }
       if (restrictions.isNotEmpty) {
+        diet = restrictions['diet']?.toString() ?? diet;
         selectedAllergens
           ..clear()
           ..addAll(
@@ -167,7 +172,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   String? _validationError() {
-    if (step == 0) {
+    if (step == 1) {
+      if (!healthConsent) {
+        return 'Подтвердите согласие на обработку данных о здоровье';
+      }
       final ageValue = _number(age);
       final heightValue = _number(height);
       final weightValue = _number(weight);
@@ -181,7 +189,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         return 'Укажите вес от 30 до 300 кг';
       }
     }
-    if (step == 3 && budgetType != 'unlimited' && _number(budget) <= 0) {
+    if (step == 2 && targetWeight.text.trim().isNotEmpty) {
+      final target = _number(targetWeight);
+      if (target < 35 || target > 300) {
+        return 'Целевой вес — от 35 до 300 кг';
+      }
+    }
+    if (step == 4 && budgetType != 'unlimited' && _number(budget) <= 0) {
       return 'Бюджет должен быть больше нуля';
     }
     return null;
@@ -221,13 +235,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           });
           break;
         case 3:
-          if (skipRestrictions) selectedAllergens.clear();
-          final values = <String>{...selectedAllergens};
-          if (!skipRestrictions && customAllergen.text.trim().isNotEmpty) {
-            values.add(customAllergen.text.trim());
+          if (skipRestrictions) {
+            selectedAllergens.clear();
+            diet = 'omnivore';
           }
+          final values = <String>{...selectedAllergens};
           await widget.api.patch('/v1/onboarding/restrictions', {
-            'diet': 'omnivore',
+            'diet': diet,
             'allergens': values.toList(),
             'excluded_product_ids': <String>[],
           });
@@ -254,13 +268,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         if (mounted) setState(() => step += 1);
       } else {
         if (mounted) setState(() => calculating = true);
-        final results = await Future.wait<dynamic>([
+        await Future.wait<dynamic>([
           widget.api.post('/v1/onboarding/complete'),
-          Future<void>.delayed(const Duration(seconds: 5)),
+          // A short minimum keeps the result screen from flashing by.
+          Future<void>.delayed(const Duration(milliseconds: 1500)),
         ]);
-        final result = Map<String, dynamic>.from(results.first as Map);
-        final planId = result['plan_id']?.toString();
-        if (planId != null) await widget.api.savePlanId(planId);
         widget.onCompleted();
       }
     } on ApiException catch (exception) {
@@ -288,10 +300,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       'Где будете заниматься?',
     ];
     const subtitles = [
-      'Пока это только локальная настройка — без запросов к серверу.',
+      'Цены в рационе сейчас рассчитываются по средним ценам Москвы.',
       'Эти данные нужны для точного расчёта калорий.',
       'Мы применим безопасный коэффициент к вашей норме.',
-      'Исключим неподходящие продукты из рациона.',
+      'Исключим блюда с отмеченными продуктами.',
       'Рацион останется в пределах указанной суммы.',
       'Активность влияет на ежедневную норму энергии.',
       'Подберём упражнения и оборудование под ваше пространство.',
@@ -428,6 +440,24 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           Expanded(child: _numberField(weight, 'Вес', 'кг')),
         ],
       ),
+      const SizedBox(height: 18),
+      CheckboxListTile(
+        value: healthConsent,
+        onChanged: (value) => setState(() => healthConsent = value ?? false),
+        contentPadding: EdgeInsets.zero,
+        controlAffinity: ListTileControlAffinity.leading,
+        activeColor: olive,
+        title: const Text(
+          'Даю согласие на обработку данных о здоровье (пол, возраст, рост, '
+          'вес, ограничения в питании) для расчёта рациона',
+          style: TextStyle(fontSize: 14),
+        ),
+      ),
+      LegalLinksText(
+        api: widget.api,
+        prefix: 'Подробнее —',
+        textAlign: TextAlign.start,
+      ),
     ],
   );
 
@@ -484,13 +514,27 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             )
             .toList(),
       ),
-      const SizedBox(height: 18),
-      TextField(
-        controller: customAllergen,
-        decoration: const InputDecoration(
-          labelText: 'Свой аллерген',
-          hintText: 'Например, сельдерей',
-        ),
+      const SizedBox(height: 12),
+      const Text(
+        'Если вашего аллергена нет в списке, проверяйте состав блюд в рецепте.',
+        style: TextStyle(color: mutedInk, fontSize: 13),
+      ),
+      const SizedBox(height: 22),
+      Text('Тип питания', style: Theme.of(context).textTheme.titleMedium),
+      const SizedBox(height: 10),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: diets.entries
+            .map(
+              (entry) => ChoiceChip(
+                label: Text(entry.value),
+                selected: diet == entry.key,
+                selectedColor: olive.withValues(alpha: .18),
+                onSelected: (_) => setState(() => diet = entry.key),
+              ),
+            )
+            .toList(),
       ),
     ],
   );

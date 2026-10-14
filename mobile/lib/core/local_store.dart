@@ -97,7 +97,17 @@ class LocalStore {
     await _persist();
   }
 
-  Future<void> _persist() async {
+  Future<void> _writing = Future<void>.value();
+
+  /// Writes are chained: parallel requests would otherwise share the temporary
+  /// file and fail each other's rename.
+  Future<void> _persist() {
+    final next = _writing.catchError((_) {}).then((_) => _writeNow());
+    _writing = next;
+    return next;
+  }
+
+  Future<void> _writeNow() async {
     final file = _file;
     if (file == null) return;
     await file.parent.create(recursive: true);

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 from typing import Annotated
 
 import jwt
@@ -13,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import decode_token
 from app.db.models import Subscription, User, UserProfile
 from app.db.session import get_db
+from app.services.billing.service import expire_paid_tier
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -26,13 +26,13 @@ async def get_current_user(
     if credentials is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "missing bearer token")
     try:
-        subject = decode_token(credentials.credentials, "access")
+        user_id = uuid.UUID(decode_token(credentials.credentials, "access"))
     except jwt.ExpiredSignatureError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "token expired") from None
-    except jwt.InvalidTokenError:
+    except (jwt.InvalidTokenError, ValueError):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token") from None
 
-    user = await session.get(User, uuid.UUID(subject))
+    user = await session.get(User, user_id)
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
     return user
@@ -62,12 +62,9 @@ async def get_subscription(user: CurrentUser, session: DbSession) -> Subscriptio
         subscription = Subscription(user_id=user.id, tier="free")
         session.add(subscription)
         await session.flush()
-    elif (
-        subscription.current_period_end is not None
-        and subscription.current_period_end <= datetime.now(timezone.utc)
-        and subscription.status == "active"
-    ):
-        subscription.status = "expired"
+    elif expire_paid_tier(subscription):
+        # A lapsed paid pass falls back to the free tier; it must never leave the
+        # user with less access than someone who never paid.
         await session.flush()
     return subscription
 
@@ -78,16 +75,10 @@ CurrentSubscription = Annotated[Subscription, Depends(get_subscription)]
 async def require_nutrition_access(
     subscription: CurrentSubscription,
 ) -> Subscription:
-    now = datetime.now(timezone.utc)
-    expired = (
-        subscription.current_period_end is not None
-        and subscription.current_period_end <= now
-    )
-    if subscription.status != "active" or expired:
-        subscription.status = "expired"
+    if subscription.status != "active":
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,
-            "subscription expired: renew access to nutrition plans",
+            "subscription is not active: renew access to nutrition plans",
         )
     return subscription
 

@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import MealPlan, MealPlanDay, MealPlanItem, Recipe, User, UserProfile, UserTargets
+from app.domain.allergens import catalogue_exclusions
 from app.domain.enums import BudgetType, MealType
 from app.domain.solver import (
     DEFAULT_SLOTS,
@@ -25,12 +26,16 @@ from app.services.catalog import load_recipe_candidates
 DEFAULT_PLAN_DAYS = 7
 
 
-def targets_for_profile(profile: UserProfile, today: date | None = None) -> Targets:
+def targets_for_profile(
+    profile: UserProfile, today: date | None = None, weight_kg: float | None = None
+) -> Targets:
+    """Targets for the profile; `weight_kg` overrides the questionnaire weight with the
+    latest weigh-in (the questionnaire value stays the programme's start weight)."""
     body = BodyProfile(
         sex=profile.sex,
         age=age_from_birth_date(profile.birth_date, today),
         height_cm=profile.height_cm,
-        weight_kg=profile.weight_kg,
+        weight_kg=weight_kg or profile.weight_kg,
     )
     return compute_targets(body, profile.activity_level, profile.goal, profile.rate_pct)
 
@@ -58,6 +63,17 @@ async def store_targets(session: AsyncSession, user_id: uuid.UUID, targets: Targ
     session.add(row)
     await session.flush()
     return row
+
+
+async def latest_weight(session: AsyncSession, user_id: uuid.UUID) -> float | None:
+    from app.db.models import ProgressEntry
+
+    return await session.scalar(
+        select(ProgressEntry.weight_kg)
+        .where(ProgressEntry.user_id == user_id)
+        .order_by(ProgressEntry.day.desc())
+        .limit(1)
+    )
 
 
 async def current_targets(session: AsyncSession, user_id: uuid.UUID) -> UserTargets | None:
@@ -90,7 +106,9 @@ async def generate_meal_plan(
     options: SolveOptions | None = None,
 ) -> MealPlan:
     date_from = date_from or date.today()
-    candidates = await load_recipe_candidates(session, user.region_code, date_from)
+    candidates = await load_recipe_candidates(
+        session, user.region_code, date_from, frozenset(profile.excluded_product_ids or [])
+    )
 
     day_targets = DayTargets(
         kcal=targets.target_kcal,
@@ -102,7 +120,7 @@ async def generate_meal_plan(
         targets=day_targets,
         meal_slots=meal_slots or DEFAULT_SLOTS,
         diet=profile.diet,
-        excluded_allergens=frozenset(profile.allergens or []),
+        excluded_allergens=catalogue_exclusions(profile.allergens),
         excluded_recipe_ids=exclude_recipe_ids,
     )
     total_budget = _budget_for_period(profile, days)

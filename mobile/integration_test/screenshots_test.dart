@@ -40,7 +40,10 @@ void main() {
     await show(tester, const _DemoSplash());
     await capture(tester, '01_splash');
 
-    await show(tester, IntroScreen(onCompleted: () async {}));
+    await show(
+      tester,
+      IntroScreen(onCompleted: ({required bool register}) async {}),
+    );
     await capture(tester, '02_intro_personal_plan');
     await tester.drag(find.byType(PageView), const Offset(-360, 0));
     await capture(tester, '03_intro_products');
@@ -139,11 +142,6 @@ void main() {
 
 class DemoApiClient extends ApiClient {
   DemoApiClient() : super(baseUrl: 'http://demo.invalid');
-
-  @override
-  Future<String?> readPlanId() async => 'demo-plan';
-  @override
-  Future<void> savePlanId(String id) async {}
 
   @override
   Future<dynamic> getAny(String path, {Map<String, String>? query}) async {

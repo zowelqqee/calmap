@@ -9,6 +9,13 @@ class OAuthCredential {
   final String? email;
 }
 
+/// The build was made without the provider's client ID.
+class OAuthNotConfigured implements Exception {
+  const OAuthNotConfigured(this.provider);
+
+  final String provider;
+}
+
 class OAuthService {
   static const googleServerClientId = String.fromEnvironment(
     'GOOGLE_SERVER_CLIENT_ID',
@@ -25,7 +32,7 @@ class OAuthService {
 
   Future<OAuthCredential> google() async {
     if (googleServerClientId.isEmpty) {
-      throw StateError('Передайте GOOGLE_SERVER_CLIENT_ID через --dart-define');
+      throw const OAuthNotConfigured('google');
     }
     if (!_googleInitialized) {
       await _google.initialize(serverClientId: googleServerClientId);
@@ -62,9 +69,7 @@ class OAuthService {
 
   Future<OAuthCredential> vk() async {
     if (vkClientId.isEmpty || vkRedirectUrl.isEmpty) {
-      throw StateError(
-        'Передайте VK_CLIENT_ID и VK_REDIRECT_URL через --dart-define',
-      );
+      throw const OAuthNotConfigured('vk');
     }
     final result = await _appAuth.authorizeAndExchangeCode(
       AuthorizationTokenRequest(

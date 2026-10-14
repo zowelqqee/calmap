@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator, field_validator
 
+from app.domain import allergens
 from app.domain.enums import ActivityLevel, BudgetType, DietType, Goal, Sex, WorkoutLocation
 
 
@@ -39,7 +41,10 @@ class PersonalStep(BaseModel):
         if self.birth_date is not None:
             return self.birth_date
         today = date.today()
-        return today.replace(year=today.year - int(self.age or 0))
+        try:
+            return today.replace(year=today.year - int(self.age or 0))
+        except ValueError:  # 29 February in a non-leap target year
+            return today.replace(year=today.year - int(self.age or 0), day=28)
 
 
 class GoalStep(BaseModel):
@@ -61,19 +66,7 @@ class RestrictionsStep(BaseModel):
     @field_validator("allergens")
     @classmethod
     def normalise_allergens(cls, values: list[str]) -> list[str]:
-        aliases = {
-            "глютен": "gluten", "gluten": "gluten",
-            "лактоза": "lactose", "lactose": "lactose",
-            "орехи": "nuts", "nuts": "nuts",
-            "морепродукты": "seafood", "seafood": "seafood",
-            "яйца": "egg", "яйцо": "egg", "egg": "egg", "eggs": "egg",
-            "соя": "soy", "soy": "soy",
-            "арахис": "peanut", "peanut": "peanut",
-            "кунжут": "sesame", "sesame": "sesame",
-            "рыба": "fish", "fish": "fish",
-            "моллюски": "molluscs", "molluscs": "molluscs",
-        }
-        return sorted({aliases.get(value.strip().lower(), value.strip().lower()) for value in values if value.strip()})
+        return allergens.normalise(values)
 
 
 class BudgetStep(BaseModel):
@@ -81,7 +74,7 @@ class BudgetStep(BaseModel):
 
     budget_type: BudgetType
     amount: float | None = Field(default=None, gt=0)
-    currency: str = "RUB"
+    currency: Literal["RUB"] = "RUB"
 
     @model_validator(mode="after")
     def amount_required_unless_unlimited(self) -> BudgetStep:

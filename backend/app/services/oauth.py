@@ -100,23 +100,36 @@ async def _verify_jwt(provider: str, token: str) -> tuple[str, str | None]:
     allowed_issuers = ISSUERS[provider]
     if issuer not in (allowed_issuers if isinstance(allowed_issuers, set) else {allowed_issuers}):
         raise OAuthVerificationError("invalid OAuth token issuer")
-    return str(claims["sub"]), claims.get("email")
+    # The email is used to link a sign-in to an existing account, so only an address
+    # the provider has verified may be returned. Apple sends the flag as a string.
+    email = claims.get("email")
+    if str(claims.get("email_verified", "")).lower() != "true":
+        email = None
+    return str(claims["sub"]), email
 
 
 async def _verify_vk(token: str) -> tuple[str, str | None]:
+    if not settings.vk_client_id:
+        raise OAuthVerificationError("VK_CLIENT_ID is not configured")
     try:
+        # VK ID binds the access token to the app: user_info answers only when the
+        # token was issued for this client_id, which rules out replaying a token that
+        # some other VK app obtained.
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
+            response = await client.post(
                 settings.vk_userinfo_url,
-                headers={"Authorization": f"Bearer {token}"},
+                data={"access_token": token, "client_id": settings.vk_client_id},
+                headers={"Accept": "application/json"},
             )
             response.raise_for_status()
             body = response.json()
     except httpx.HTTPError as exc:
         raise OAuthVerificationError("VK identity verification failed") from exc
 
-    data = body.get("user", body)
-    subject = data.get("user_id") or data.get("id")
+    if body.get("error"):
+        raise OAuthVerificationError("VK rejected the access token")
+    data = body.get("user") or {}
+    subject = data.get("user_id")
     if not subject:
         raise OAuthVerificationError("VK response has no user id")
     return str(subject), data.get("email")

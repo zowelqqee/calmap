@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/api_client.dart';
@@ -8,8 +9,9 @@ import 'screens/home_screen.dart';
 import 'screens/intro_screen.dart';
 import 'screens/onboarding_screen.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const CalmapApp());
 }
 
@@ -24,12 +26,26 @@ class CalmapApp extends StatefulWidget {
 
 class _CalmapAppState extends State<CalmapApp> {
   final ApiClient api = ApiClient();
+  final navigatorKey = GlobalKey<NavigatorState>();
   AppStage stage = AppStage.loading;
+  String? startupError;
+  bool startInRegisterMode = false;
 
   @override
   void initState() {
     super.initState();
+    api.onSessionExpired = () => _goTo(AppStage.auth);
     _bootstrap();
+  }
+
+  /// Switch the root stage and drop any screens pushed on top of the old one.
+  void _goTo(AppStage next) {
+    if (!mounted) return;
+    navigatorKey.currentState?.popUntil((route) => route.isFirst);
+    setState(() {
+      startupError = null;
+      stage = next;
+    });
   }
 
   Future<void> _bootstrap() async {
@@ -50,26 +66,36 @@ class _CalmapAppState extends State<CalmapApp> {
   Future<void> _afterAuthentication() async {
     try {
       final me = await api.get('/v1/auth/me');
-      if (!mounted) return;
-      setState(() {
-        stage = me['onboarding_completed'] == true
+      _goTo(
+        me['onboarding_completed'] == true
             ? AppStage.home
-            : AppStage.onboarding;
-      });
-    } catch (_) {
-      await api.clearSession();
-      if (mounted) setState(() => stage = AppStage.auth);
+            : AppStage.onboarding,
+      );
+    } on ApiException catch (exception) {
+      if (exception.statusCode == 401) {
+        await api.clearSession();
+        _goTo(AppStage.auth);
+        return;
+      }
+      // Offline or a server outage is not a reason to sign the user out.
+      if (mounted) {
+        setState(() {
+          stage = AppStage.loading;
+          startupError = exception.message;
+        });
+      }
     }
   }
 
   Future<void> _logout() async {
     await api.clearSession();
-    if (mounted) setState(() => stage = AppStage.auth);
+    _goTo(AppStage.auth);
   }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'Calmap',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(),
@@ -81,20 +107,28 @@ class _CalmapAppState extends State<CalmapApp> {
         GlobalCupertinoLocalizations.delegate,
       ],
       home: switch (stage) {
-        AppStage.loading => const _SplashScreen(),
+        AppStage.loading => _SplashScreen(
+          error: startupError,
+          onRetry: () {
+            setState(() => startupError = null);
+            _afterAuthentication();
+          },
+        ),
         AppStage.intro => IntroScreen(
-          onCompleted: () async {
+          onCompleted: ({required bool register}) async {
             await api.markIntroSeen();
-            if (mounted) setState(() => stage = AppStage.auth);
+            startInRegisterMode = register;
+            _goTo(AppStage.auth);
           },
         ),
         AppStage.auth => AuthScreen(
           api: api,
+          initialRegister: startInRegisterMode,
           onAuthenticated: _afterAuthentication,
         ),
         AppStage.onboarding => OnboardingScreen(
           api: api,
-          onCompleted: () => setState(() => stage = AppStage.home),
+          onCompleted: () => _goTo(AppStage.home),
         ),
         AppStage.home => HomeScreen(api: api, onLogout: _logout),
       },
@@ -103,7 +137,10 @@ class _CalmapAppState extends State<CalmapApp> {
 }
 
 class _SplashScreen extends StatelessWidget {
-  const _SplashScreen();
+  const _SplashScreen({this.error, this.onRetry});
+
+  final String? error;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -144,6 +181,19 @@ class _SplashScreen extends StatelessWidget {
                 letterSpacing: 1.7,
               ),
             ),
+            if (error != null) ...[
+              const SizedBox(height: 32),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Text(
+                  error!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: mutedInk),
+                ),
+              ),
+              const SizedBox(height: 14),
+              FilledButton(onPressed: onRetry, child: const Text('Повторить')),
+            ],
           ],
         ),
       ),

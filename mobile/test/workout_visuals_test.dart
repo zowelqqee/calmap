@@ -10,6 +10,14 @@ import 'package:calmap_mobile/widgets/muscle_map.dart';
 
 import '../integration_test/screenshots_test.dart';
 
+// Golden images are rendered with macOS system fonts, so these comparisons run
+// only where those fonts exist (the developer's Mac); elsewhere they are skipped.
+const _arialPath = '/System/Library/Fonts/Supplemental/Arial.ttf';
+const _iconsPath =
+    '/opt/homebrew/share/flutter/bin/cache/artifacts/material_fonts/MaterialIcons-Regular.otf';
+final bool _goldenFontsAvailable =
+    File(_arialPath).existsSync() && File(_iconsPath).existsSync();
+
 void main() {
   final api = DemoApiClient();
 
@@ -38,18 +46,11 @@ void main() {
   }
 
   setUpAll(() async {
+    if (!_goldenFontsAvailable) return;
     final previewFont = FontLoader('PreviewArial')
-      ..addFont(
-        File(
-          '/System/Library/Fonts/Supplemental/Arial.ttf',
-        ).readAsBytes().then(ByteData.sublistView),
-      );
+      ..addFont(File(_arialPath).readAsBytes().then(ByteData.sublistView));
     final materialIcons = FontLoader('MaterialIcons')
-      ..addFont(
-        File(
-          '/opt/homebrew/share/flutter/bin/cache/artifacts/material_fonts/MaterialIcons-Regular.otf',
-        ).readAsBytes().then(ByteData.sublistView),
-      );
+      ..addFont(File(_iconsPath).readAsBytes().then(ByteData.sublistView));
     await Future.wait([previewFont.load(), materialIcons.load()]);
   });
 
@@ -72,7 +73,7 @@ void main() {
       find.byType(WorkoutScreen),
       matchesGoldenFile('goldens/workout_muscle_map.png'),
     );
-  });
+  }, skip: !_goldenFontsAvailable);
 
   testWidgets('renders workout preferences', (tester) async {
     await pumpScreen(tester, WorkoutPreferencesScreen(api: api));
@@ -80,7 +81,7 @@ void main() {
       find.byType(WorkoutPreferencesScreen),
       matchesGoldenFile('goldens/workout_preferences.png'),
     );
-  });
+  }, skip: !_goldenFontsAvailable);
 
   testWidgets('renders the male anatomy map', (tester) async {
     await pumpScreen(
@@ -103,7 +104,7 @@ void main() {
       find.byType(WorkoutMuscleSummary),
       matchesGoldenFile('goldens/male_muscle_map.png'),
     );
-  });
+  }, skip: !_goldenFontsAvailable);
 
   testWidgets('renders the female anatomy map', (tester) async {
     await pumpScreen(
@@ -127,5 +128,5 @@ void main() {
       find.byType(WorkoutMuscleSummary),
       matchesGoldenFile('goldens/female_muscle_map.png'),
     );
-  });
+  }, skip: !_goldenFontsAvailable);
 }

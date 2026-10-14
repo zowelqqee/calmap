@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import httpx
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.api.deps import CurrentProfile, CurrentSubscription, CurrentUser, DbSession
 from app.db.models import AssistantConversation, AssistantMessage, DiaryEntry
@@ -18,6 +21,7 @@ from app.services.assistant import SYSTEM_PROMPT, get_assistant_provider
 from app.services.planning import current_targets
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
+logger = logging.getLogger(__name__)
 
 
 def _message_out(message: AssistantMessage) -> AssistantMessageOut:
@@ -79,6 +83,10 @@ async def chat(
     limit = subscription.limits["assistant_messages_per_month"]
     if limit <= 0:
         raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, "AI consultation requires the pro plan")
+    # Serialise this user's chat turns so parallel requests cannot all pass the quota.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"assistant:{user.id}"}
+    )
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     used = await session.scalar(
@@ -107,13 +115,21 @@ async def chat(
     messages.extend({"role": item.role, "content": item.content} for item in reversed(previous))
     messages.append({"role": "user", "content": payload.message})
 
-    user_message = AssistantMessage(conversation_id=conversation.id, role="user", content=payload.message)
+    # Explicit timestamps: the column default is the transaction start time, which
+    # would give the question and the reply the same created_at and an arbitrary order.
+    user_message = AssistantMessage(
+        conversation_id=conversation.id, role="user", content=payload.message, created_at=now
+    )
     session.add(user_message)
     try:
         reply = await get_assistant_provider().reply(messages)
-    except (RuntimeError, OSError) as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from None
+    except (RuntimeError, OSError, httpx.HTTPError):
+        logger.exception("assistant provider failed")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "AI consultation is temporarily unavailable"
+        ) from None
     assistant_message = AssistantMessage(
+        created_at=max(datetime.now(timezone.utc), now + timedelta(microseconds=1)),
         conversation_id=conversation.id,
         role="assistant",
         content=reply.content,

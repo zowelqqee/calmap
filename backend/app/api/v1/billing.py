@@ -21,6 +21,10 @@ async def plans() -> list[BillingPlanOut]:
 
 @router.post("/checkout", response_model=CheckoutOut, status_code=status.HTTP_201_CREATED)
 async def checkout(payload: CheckoutRequest, user: CurrentUser, session: DbSession) -> CheckoutOut:
+    if settings.env == "production" and settings.billing_provider == "stub":
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "оплата временно недоступна"
+        )
     try:
         payment = await create_checkout(session, user, payload.tier)
     except (ValueError, RuntimeError) as exc:
@@ -69,12 +73,21 @@ async def cancel(user: CurrentUser, session: DbSession) -> SubscriptionOut:
 async def webhook(provider: str, request: Request, session: DbSession) -> dict:
     if provider not in {"stub", "yookassa", "cloudpayments"}:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "unsupported billing provider")
-    if settings.env == "production" and provider != settings.billing_provider:
+    # Only the configured provider is accepted; the unsigned stub additionally works
+    # outside production so local end-to-end tests can complete a purchase.
+    enabled = provider == settings.billing_provider or provider == "stub"
+    if not enabled or (provider == "stub" and settings.env == "production"):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "billing provider is not enabled")
     try:
         processed = await handle_webhook(
             session, provider, await request.body(), {k.lower(): v for k, v in request.headers.items()}
         )
-    except (ValueError, RuntimeError) as exc:
+    except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+    except RuntimeError as exc:
+        # Provider-side outage: a 5xx makes the provider retry the delivery later.
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from None
+    if provider == "cloudpayments":
+        # CloudPayments treats anything but {"code": 0} as a failed delivery.
+        return {"code": 0}
     return {"ok": True, "processed": processed}

@@ -1,0 +1,6 @@
+{
+  "API_BASE_URL": "https://api.example.ru",
+  "GOOGLE_SERVER_CLIENT_ID": "",
+  "VK_CLIENT_ID": "",
+  "VK_REDIRECT_URL": "ru.calmap.app:/oauth"
+}

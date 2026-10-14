@@ -1,4 +1,4 @@
-.venv/
+.venv
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -23,3 +23,6 @@ mobile/.metadata
 mobile/android/.gradle/
 mobile/ios/Pods/
 mobile/ios/.symlinks/
+
+# Golden test diffs
+mobile/test/failures/

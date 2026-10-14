@@ -8,7 +8,6 @@ from sqlalchemy import delete, select
 
 from app.api.deps import CurrentProfile, CurrentUser, DbSession
 from app.db.models import Workout, WorkoutExercise
-from app.domain.enums import WorkoutLocation
 from app.domain.exercises import EQUIPMENT_TYPES, EXERCISE_BY_ID, MUSCLE_GROUPS
 from app.schemas.wellness import (
     ExerciseOut, ExerciseUpdate, WorkoutCalendarDayOut, WorkoutOut,

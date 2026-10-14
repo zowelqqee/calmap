@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../core/api_client.dart';
@@ -40,11 +41,21 @@ class _DiaryScreenState extends State<DiaryScreen> {
   }
 
   Future<void> _pick(ImageSource source) async {
-    final file = await picker.pickImage(
-      source: source,
-      imageQuality: 82,
-      maxWidth: 1600,
-    );
+    final XFile? file;
+    try {
+      file = await picker.pickImage(
+        source: source,
+        imageQuality: 82,
+        maxWidth: 1600,
+      );
+    } on PlatformException {
+      _snack(
+        source == ImageSource.camera
+            ? 'Нет доступа к камере. Разрешите его в настройках телефона.'
+            : 'Нет доступа к фото. Разрешите его в настройках телефона.',
+      );
+      return;
+    }
     if (file == null) return;
     if (mounted) setState(() => loading = true);
     try {
@@ -316,7 +327,7 @@ class _DiaryScreenState extends State<DiaryScreen> {
     if (accepted != true) return;
     try {
       final source = day.subtract(const Duration(days: 1));
-      await widget.api.post('/v1/diary/repeat', {
+      await widget.api.postList('/v1/diary/repeat', {
         'source_day': _formatDay(source),
         'target_day': isoDay,
         'meal_type': mealType,

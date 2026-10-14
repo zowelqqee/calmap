@@ -20,7 +20,9 @@ class WebhookEvent:
     payment_id: str | None
     user_id: str | None
     tier: str | None
+    #: One of succeeded | pending | canceled | failed, already normalised.
     status: str
+    amount_rub: float | None
     raw_payload: dict
 
 
@@ -37,5 +39,5 @@ class BillingProvider(Protocol):
         idempotency_key: str,
     ) -> CheckoutResult: ...
 
-    def verify_webhook(self, body: bytes, headers: dict[str, str]) -> WebhookEvent: ...
+    async def verify_webhook(self, body: bytes, headers: dict[str, str]) -> WebhookEvent: ...
 

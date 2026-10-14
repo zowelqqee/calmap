@@ -38,24 +38,19 @@ class _PlanScreenState extends State<PlanScreen> {
       needsRenewal = false;
     });
     try {
-      var planId = await widget.api.readPlanId();
-      if (planId == null) {
-        final generated = await widget.api.post('/v1/meal-plans/generate', {
+      // The plan covering today is the source of truth. When the previous plan has
+      // run out, the next one starts today (its length follows the tariff).
+      try {
+        plan = await widget.api.get(
+          '/v1/meal-plans/current',
+          query: {'day': _iso(DateTime.now())},
+        );
+      } on ApiException catch (exception) {
+        if (exception.statusCode != 404) rethrow;
+        plan = await widget.api.post('/v1/meal-plans/generate', {
+          'date_from': _iso(DateTime.now()),
           'days': 7,
         });
-        planId = generated['id'].toString();
-        await widget.api.savePlanId(planId);
-        plan = generated;
-      } else {
-        try {
-          plan = await widget.api.get('/v1/meal-plans/$planId');
-        } on ApiException catch (exception) {
-          if (exception.statusCode == 404) {
-            plan = await widget.api.get('/v1/meal-plans/current');
-          } else {
-            rethrow;
-          }
-        }
       }
       _selectAvailableDate();
       await _loadDiary();
@@ -103,22 +98,26 @@ class _PlanScreenState extends State<PlanScreen> {
       builder: (_) =>
           _NutritionCalendar(api: widget.api, initialDate: selectedDate),
     );
-    if (picked == null) return;
+    if (picked == null || !mounted) return;
     setState(() {
       selectedDate = picked;
       loading = true;
+      error = null;
     });
     try {
       plan = await widget.api.get(
         '/v1/meal-plans/current',
         query: {'day': _iso(picked)},
       );
-      await widget.api.savePlanId(plan!['id'].toString());
       await _loadDiary();
     } on ApiException catch (exception) {
-      error = exception.statusCode == 404
-          ? 'На выбранный день рацион ещё не составлен'
-          : exception.message;
+      if (exception.statusCode == 402) {
+        needsRenewal = true;
+      } else {
+        error = exception.statusCode == 404
+            ? 'На выбранный день рацион ещё не составлен'
+            : exception.message;
+      }
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -131,7 +130,6 @@ class _PlanScreenState extends State<PlanScreen> {
         'date_from': _iso(selectedDate),
         'days': 7,
       });
-      await widget.api.savePlanId(generated['id'].toString());
       plan = generated;
       _selectAvailableDate();
       await _loadDiary();
@@ -163,6 +161,8 @@ class _PlanScreenState extends State<PlanScreen> {
       if (mounted) setState(() => loading = false);
     }
   }
+
+  void _openSubPage(Widget screen) => _open(SubPage(child: screen));
 
   void _open(Widget screen) => Navigator.of(
     context,
@@ -197,8 +197,8 @@ class _PlanScreenState extends State<PlanScreen> {
                   const SizedBox(width: 8),
                   IconButton(
                     onPressed: () => _showNutritionInfo(context),
-                    tooltip: 'Настройки',
-                    icon: const Icon(Icons.tune_rounded),
+                    tooltip: 'Как составлен рацион',
+                    icon: const Icon(Icons.info_outline_rounded),
                   ),
                 ],
               ),
@@ -214,7 +214,7 @@ class _PlanScreenState extends State<PlanScreen> {
             else if (needsRenewal)
               _RenewalCard(
                 onRetry: _load,
-                onRenew: () => _open(
+                onRenew: () => _openSubPage(
                   ProfileScreen(
                     api: widget.api,
                     onLogout: () async {},
@@ -238,7 +238,8 @@ class _PlanScreenState extends State<PlanScreen> {
                 children: [
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: () => _open(DiaryScreen(api: widget.api)),
+                      onPressed: () =>
+                          _openSubPage(DiaryScreen(api: widget.api)),
                       icon: const Icon(Icons.camera_alt_outlined),
                       label: const Text('Записать еду'),
                     ),
@@ -826,6 +827,13 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
       recipe = await widget.api.get(
         '/v1/catalog/recipes/${widget.item['recipe_slug']}',
       );
+    } on ApiException catch (exception) {
+      // The plan item still has name, weight and nutrients to show.
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Рецепт не загрузился: ${exception.message}')),
+        );
+      }
     } finally {
       if (mounted) setState(() => loading = false);
     }
@@ -834,14 +842,26 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   Future<void> _favorite() async {
     if (recipe == null) return;
     final favorite = recipe!['is_favorite'] == true;
-    final result = favorite
-        ? await widget.api.delete(
-            '/v1/catalog/recipes/${recipe!['slug']}/favorite',
-          )
-        : await widget.api.post(
-            '/v1/catalog/recipes/${recipe!['slug']}/favorite',
-          );
-    if (mounted) setState(() => recipe!['is_favorite'] = result['is_favorite']);
+    try {
+      final result = favorite
+          ? await widget.api.delete(
+              '/v1/catalog/recipes/${recipe!['slug']}/favorite',
+            )
+          : await widget.api.post(
+              '/v1/catalog/recipes/${recipe!['slug']}/favorite',
+            );
+      if (mounted) {
+        setState(
+          () => recipe!['is_favorite'] = result['is_favorite'] ?? !favorite,
+        );
+      }
+    } on ApiException catch (exception) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(exception.message)));
+      }
+    }
   }
 
   @override
@@ -1073,6 +1093,12 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
         // The shopping list remains usable while an external retail provider is
         // unavailable. This is expected before a partner API is connected.
         offers = null;
+      }
+    } on ApiException catch (exception) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(exception.message)));
       }
     } finally {
       if (mounted) setState(() => loading = false);

@@ -18,6 +18,7 @@ os.environ["DATABASE_URL"] = f"postgresql+asyncpg://localhost:5432/{TEST_DB}"
 os.environ["ENV"] = "local"
 os.environ["VISION_PROVIDER"] = "stub"
 os.environ["SECRET_KEY"] = "test-secret-key-not-used-anywhere-else"
+os.environ["AUTH_RATE_LIMIT_PER_MINUTE"] = "0"
 
 import psycopg  # noqa: E402
 import pytest  # noqa: E402

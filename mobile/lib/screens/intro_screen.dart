@@ -5,7 +5,8 @@ import '../core/theme.dart';
 class IntroScreen extends StatefulWidget {
   const IntroScreen({required this.onCompleted, super.key});
 
-  final Future<void> Function() onCompleted;
+  /// `register` is true for "Начать" (new user) and false for "Войти".
+  final Future<void> Function({required bool register}) onCompleted;
 
   @override
   State<IntroScreen> createState() => _IntroScreenState();
@@ -46,7 +47,7 @@ class _IntroScreenState extends State<IntroScreen> {
         curve: Curves.easeOutCubic,
       );
     } else {
-      await widget.onCompleted();
+      await widget.onCompleted(register: true);
     }
   }
 
@@ -135,7 +136,7 @@ class _IntroScreenState extends State<IntroScreen> {
                 ),
                 if (page == pages.length - 1)
                   TextButton(
-                    onPressed: widget.onCompleted,
+                    onPressed: () => widget.onCompleted(register: false),
                     child: const Text('Уже есть аккаунт? Войти'),
                   ),
               ],
