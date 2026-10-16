@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../core/api_client.dart';
@@ -116,11 +118,44 @@ class _CalorieTrackerScreenState extends State<CalorieTrackerScreen> {
         isScrollControlled: true,
         builder: (sheetContext) {
           var tab = 0;
+          // Products are searched on the server (the catalogue is larger than the
+          // first page); dishes are few enough to filter locally.
+          List<Map<String, dynamic>>? searched;
+          Timer? debounce;
+          var requestSeq = 0;
           return StatefulBuilder(
             builder: (context, setSheetState) {
+              void onQueryChanged(String value) {
+                setSheetState(() {});
+                debounce?.cancel();
+                final text = value.trim();
+                if (text.length < 2) {
+                  searched = null;
+                  return;
+                }
+                debounce = Timer(const Duration(milliseconds: 300), () async {
+                  final seq = ++requestSeq;
+                  try {
+                    final found = _maps(
+                      await widget.api.getList(
+                        '/v1/catalog/products',
+                        query: {'q': text, 'limit': '50'},
+                      ),
+                    );
+                    if (seq == requestSeq && context.mounted) {
+                      setSheetState(() => searched = found);
+                    }
+                  } on ApiException {
+                    // Keep the local results while offline.
+                  }
+                });
+              }
+
               final source = tab == 0 ? products : recipes;
               final query = search.text.trim().toLowerCase();
-              final filtered = query.isEmpty
+              final filtered = tab == 0 && searched != null && query.length >= 2
+                  ? searched!
+                  : query.isEmpty
                   ? source
                   : source
                         .where(
@@ -160,9 +195,9 @@ class _CalorieTrackerScreenState extends State<CalorieTrackerScreen> {
                         const SizedBox(height: 12),
                         TextField(
                           controller: search,
-                          onChanged: (_) => setSheetState(() {}),
+                          onChanged: onQueryChanged,
                           decoration: const InputDecoration(
-                            hintText: 'Поиск по базовому списку',
+                            hintText: 'Поиск продукта или блюда',
                             prefixIcon: Icon(Icons.search),
                           ),
                         ),

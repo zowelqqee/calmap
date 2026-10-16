@@ -8,18 +8,52 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    env: Literal["local", "staging", "production"] = "local"
-    debug: bool = True
+    # Safe defaults: a .env without ENV/DEBUG runs as production (and fails fast on a
+    # weak secret) instead of silently enabling test sign-in, /docs and wildcard CORS.
+    env: Literal["local", "staging", "production"] = "production"
+    debug: bool = False
     secret_key: str = "dev-only-secret-key-do-not-use-in-production"
     cors_origins: str = ""
 
     database_url: str = "postgresql+asyncpg://localhost:5432/calmap"
 
+    # Sign-in by SMS code. stub keeps messages in memory (refused in production);
+    # smsru sends through SMS.ru.
+    sms_provider: Literal["stub", "smsru"] = "stub"
+    smsru_api_id: str = ""
+    sms_sender: str = ""
+    sms_daily_limit: int = 2000
+    phone_code_ttl_seconds: int = 300
+    phone_code_resend_seconds: int = 60
+    phone_code_max_attempts: int = 5
+    phone_codes_per_hour: int = 5
+    #: Codes per day from one IPv4 address or IPv6 /64, across all numbers.
+    #: Mobile carriers put many subscribers behind one IPv4 address (CGNAT), so
+    #: this is a ceiling against pumping, not a per-person limit.
+    sms_per_network_daily: int = 100
+
+    # Per-IP attempts per minute on sign-in endpoints; 0 disables.
+    auth_rate_limit_per_minute: int = 20
+
+    # Public legal pages (/legal/privacy, /legal/terms). The operator details are
+    # required by 152-FZ and by the app stores; they are not invented in code.
+    legal_operator_name: str = ""
+    legal_contact_email: str = ""
+    #: Who processes AI-consultant requests on the operator's behalf and in which
+    #: country (named in the AI consent; a foreign country means cross-border transfer).
+    assistant_processor_name: str = ""
+    assistant_processor_country: str = ""
+    #: Photo recognition processor named in its consent; empty — the same as the
+    #: AI consultant's (one provider for both is the usual setup).
+    vision_processor_name: str = ""
+    vision_processor_country: str = ""
+
+    # /docs and /openapi.json are disabled in production unless explicitly enabled.
+    expose_docs: bool = False
+
     access_token_ttl_minutes: int = 30
     refresh_token_ttl_days: int = 60
 
-    apple_client_id: str = ""
-    google_client_id: str = ""
     vk_client_id: str = ""
 
     vision_provider: Literal["stub", "gemini", "openai_compatible"] = "stub"
@@ -55,20 +89,13 @@ class Settings(BaseSettings):
     assistant_base_url: str = ""
     assistant_model: str = "gpt-4o-mini"
 
-    # Billing is provider-agnostic in the application layer. `stub` is useful for
-    # local end-to-end testing; production uses yookassa or cloudpayments.
-    billing_provider: Literal["stub", "yookassa", "cloudpayments"] = "stub"
-    billing_return_url: str = "http://localhost:3000/billing/complete"
-    yookassa_shop_id: str = ""
-    yookassa_secret_key: str = ""
-    cloudpayments_public_id: str = ""
-    cloudpayments_secret: str = ""
-    cloudpayments_checkout_url: str = ""
+    # Subscriptions. Payment happens in a Telegram bot, which pushes the status to
+    # /v1/bot/* authenticated with TELEGRAM_BOT_API_SECRET. The app reads it only
+    # and does not link to the bot.
+    trial_days: int = 3
+    telegram_bot_api_secret: str = ""
 
-    # OAuth verification. Apple and Google use their public JWKS; VK is verified via
-    # the configured user-info endpoint because VK ID access tokens are not uniform
-    # JWTs across app configurations.
-    oauth_jwks_cache_seconds: int = 3600
+    # VK ID sign-in: tokens are verified by the user-info endpoint with our client_id.
     vk_userinfo_url: str = "https://id.vk.com/oauth2/user_info"
 
     # Optional retailer aggregator. `stub` returns a clearly labelled catalogue
@@ -83,6 +110,10 @@ class Settings(BaseSettings):
     retail_parse_5ka_scraper_id: str = ""
     retail_parse_5ka_store_id: str = ""
 
+    # Calendar days ("today", daily quotas, plan dates) follow this zone for both the
+    # process (TZ) and Postgres sessions.
+    app_timezone: str = "Europe/Moscow"
+
     default_region_code: str = "RU-MOW"
     default_currency: str = "RUB"
 
@@ -94,9 +125,11 @@ class Settings(BaseSettings):
             if (
                 len(self.secret_key) < 32
                 or self.secret_key == "dev-only-secret-key-do-not-use-in-production"
-                or self.secret_key.startswith("replace-with-")
+                or self.secret_key.startswith(("replace-with-", "change-me"))
             ):
                 raise ValueError("SECRET_KEY must contain at least 32 characters in production")
+            if self.telegram_bot_api_secret and len(self.telegram_bot_api_secret) < 32:
+                raise ValueError("TELEGRAM_BOT_API_SECRET must contain at least 32 characters")
         return self
 
     @property

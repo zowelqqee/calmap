@@ -1,0 +1,47 @@
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Access log to stdout; docker rotates it (10 MB × 5). Contains client IPs and
+	# paths, never tokens: the API takes credentials in headers and bodies only.
+	log {
+		output stdout
+		format json
+	}
+
+	# The bot reaches the backend inside the compose network, so the bot API is
+	# closed from the internet. BOT_ALLOWED_IPS opens it for a bot on another server.
+	@bot_forbidden {
+		path /v1/bot/*
+		not remote_ip {$BOT_ALLOWED_IPS:127.0.0.1/32}
+	}
+	respond @bot_forbidden 404
+
+	# YooKassa notifications for the payment bot, from YooKassa's published
+	# addresses only (https://yookassa.ru/developers/using-api/webhooks). The bot
+	# re-reads every payment through the API anyway; this cuts the noise.
+	@yookassa_forbidden {
+		path /yookassa/*
+		not remote_ip {$YOOKASSA_ALLOWED_IPS:185.71.76.0/27 185.71.77.0/27 77.75.153.0/25 77.75.156.11/32 77.75.156.35/32 77.75.154.128/25 2a02:5180::/32}
+	}
+	respond @yookassa_forbidden 404
+	handle /yookassa/* {
+		reverse_proxy bot:8080
+	}
+
+	reverse_proxy backend:8000
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		# JSON API, recipe images and the static legal pages (inline styles only).
+		Content-Security-Policy "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+		-Server
+	}
+
+	request_body {
+		max_size 12MB
+	}
+}

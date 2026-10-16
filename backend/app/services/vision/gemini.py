@@ -94,7 +94,9 @@ class GeminiVisionProvider:
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
                 f"{self._base_url}/models/{self.model}:generateContent",
-                params={"key": settings.gemini_api_key},
+                # Header, not ?key=: httpx error messages include the URL, and a key
+                # in the query string would end up in logs and error responses.
+                headers={"x-goog-api-key": settings.gemini_api_key},
                 json=payload,
             )
             response.raise_for_status()
@@ -118,10 +120,10 @@ class GeminiVisionProvider:
                         alternatives=[a for a in item.get("alternatives", []) if a in known][:3],
                     )
                 )
-        except (KeyError, IndexError, ValueError, json.JSONDecodeError):
+        except (KeyError, IndexError, TypeError, AttributeError, ValueError, json.JSONDecodeError):
             candidates = []
 
-        usage = body.get("usageMetadata", {})
+        usage = body.get("usageMetadata", {}) if isinstance(body, dict) else {}
         cost = (
             usage.get("promptTokenCount", 0) * INPUT_USD_PER_MTOK
             + usage.get("candidatesTokenCount", 0) * OUTPUT_USD_PER_MTOK

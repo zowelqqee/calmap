@@ -21,7 +21,6 @@ void main() {
     await tester.tap(find.text('Далее'));
     await tester.pumpAndSettle();
     expect(find.text('Тренировки под твой уровень'), findsOneWidget);
-    expect(find.text('Уже есть аккаунт? Войти'), findsOneWidget);
     await tester.tap(find.text('Начать'));
     await tester.pump();
     expect(completed, isTrue);

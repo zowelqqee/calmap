@@ -50,6 +50,8 @@ class StubAssistantProvider:
     model = "stub-v1"
 
     async def reply(self, messages: list[dict[str, str]]) -> AssistantReply:
+        if settings.env == "production":
+            raise RuntimeError("stub assistant provider is disabled in production")
         text = messages[-1]["content"] if messages else ""
         return AssistantReply(
             provider=self.name,

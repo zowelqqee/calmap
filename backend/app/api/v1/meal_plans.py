@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 from dataclasses import asdict
@@ -7,9 +8,11 @@ from dataclasses import asdict
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+from starlette.concurrency import run_in_threadpool
 
-from app.api.deps import CurrentProfile, CurrentUser, DbSession, NutritionSubscription
+from app.api.deps import ActiveAccess, CurrentProfile, CurrentUser, DbSession
 from app.db.models import MealPlan, MealPlanDay, MealPlanItem, ProgressEntry, Recipe
+from app.domain.allergens import catalogue_exclusions
 from app.domain.enums import MealType
 from app.domain.solver import DayTargets, MenuRequest, build_day
 from app.services.catalog import load_recipe_candidates
@@ -27,6 +30,7 @@ from app.schemas.retail import RetailOfferOut, ShoppingOffersOut
 from app.services.retail import get_retail_provider
 from app.services.planning import current_targets, generate_meal_plan, shopping_list
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/meal-plans", tags=["meal-plans"])
 
 
@@ -104,13 +108,13 @@ async def generate(
     user: CurrentUser,
     profile: CurrentProfile,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
 ) -> PlanOut:
     targets = await current_targets(session, user.id)
     if targets is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "compute targets first")
 
-    days = min(payload.days, subscription.limits["plan_days"])
+    days = min(payload.days, access.limits["plan_days"])
     plan = await generate_meal_plan(
         session,
         user,
@@ -128,7 +132,7 @@ async def generate(
 async def current_plan(
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
     day: date | None = None,
 ) -> PlanOut:
     requested = day or date.today()
@@ -153,10 +157,10 @@ async def plan_calendar(
     date_to: date,
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
 ) -> list[PlanCalendarDayOut]:
     if (date_to - date_from).days > 62:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "range is limited to 63 days")
+        raise HTTPException(422, "range is limited to 63 days")
     rows = (
         await session.execute(
             select(MealPlanDay, MealPlan.id, MealPlan.created_at)
@@ -191,7 +195,7 @@ async def get_plan(
     plan_id: uuid.UUID,
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
 ) -> PlanOut:
     return await _serialize(session, await _owned_plan(session, plan_id, user.id))
 
@@ -201,7 +205,7 @@ async def get_shopping_list(
     plan_id: uuid.UUID,
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
     day: date | None = None,
 ) -> ShoppingListOut:
     """Aggregated ingredients with an estimated cost.
@@ -227,7 +231,7 @@ async def get_shopping_offers(
     plan_id: uuid.UUID,
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
     day: date | None = None,
 ) -> ShoppingOffersOut:
     """Return retailer offers through a configured partner adapter.
@@ -241,8 +245,12 @@ async def get_shopping_offers(
     entries = await shopping_list(session, plan, user.region_code, day=day)
     try:
         offers = await get_retail_provider().offers(entries, user.region_code, plan.currency)
-    except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from None
+    except RuntimeError:
+        # The message can name configuration keys; it goes to the log only.
+        logger.exception("retail provider failed")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "shopping offers are temporarily unavailable"
+        ) from None
     return ShoppingOffersOut(
         plan_id=str(plan.id),
         region_code=user.region_code,
@@ -257,7 +265,7 @@ async def swap_item(
     user: CurrentUser,
     profile: CurrentProfile,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
 ) -> PlanOut:
     """Replace one meal without touching the rest of the day.
 
@@ -291,7 +299,9 @@ async def swap_item(
     }
     rejected = slug_by_id[item.recipe_id]
 
-    candidates = await load_recipe_candidates(session, user.region_code, day_row.day)
+    candidates = await load_recipe_candidates(
+        session, user.region_code, day_row.day, frozenset(profile.excluded_product_ids or [])
+    )
     day_budget = day_row.cost if plan.budget_total is None else plan.budget_total / max(
         1, len(plan.days)
     )
@@ -305,10 +315,10 @@ async def swap_item(
         budget_per_day=day_budget if plan.budget_total is not None else None,
         meal_slots=slots,
         diet=profile.diet,
-        excluded_allergens=frozenset(profile.allergens or []),
+        excluded_allergens=catalogue_exclusions(profile.allergens),
         excluded_recipe_ids=frozenset({rejected}),
     )
-    new_day = build_day(candidates, request, locked=locked)
+    new_day = await run_in_threadpool(build_day, candidates, request, locked=locked)
     if not new_day.items:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "no replacement dish satisfies the constraints"
