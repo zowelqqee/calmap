@@ -8,9 +8,12 @@ import logging
 import sys
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 from aiohttp import web
 
+from calmap_bot import texts
 from calmap_bot.backend import CalmapBackend
 from calmap_bot.billing import Billing
 from calmap_bot.config import get_settings
@@ -45,12 +48,14 @@ async def run() -> None:
 
     db = Database(settings.database_url)
     await db.create_schema()
-    bot = Bot(settings.bot_token)
+    bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     backend = CalmapBackend(settings.calmap_api_url, settings.telegram_bot_api_secret)
     yookassa = YooKassa(settings.yookassa_shop_id, settings.yookassa_secret_key)
 
-    async def notify(telegram_user_id: int, text: str) -> None:
-        await bot.send_message(telegram_user_id, text)
+    async def notify(telegram_user_id: int, text: str, markup=None) -> None:
+        await bot.send_message(
+            telegram_user_id, text, reply_markup=markup, disable_web_page_preview=True
+        )
 
     billing = Billing(
         db,
@@ -66,11 +71,17 @@ async def run() -> None:
     dispatcher.include_router(build_router(settings, db, backend, billing))
     await bot.set_my_commands(
         [
-            BotCommand(command="pay", description="Оплатить или продлить подписку"),
-            BotCommand(command="status", description="Срок подписки"),
-            BotCommand(command="help", description="Помощь"),
+            BotCommand(command="status", description="📅 Моя подписка"),
+            BotCommand(command="pay", description="💳 Продлить или оформить"),
+            BotCommand(command="help", description="❓ Помощь и вопросы"),
         ]
     )
+
+    try:
+        await bot.set_my_description(texts.BOT_DESCRIPTION)
+        await bot.set_my_short_description(texts.BOT_SHORT_DESCRIPTION)
+    except Exception:  # noqa: BLE001 — cosmetics must not stop the bot
+        logger.warning("could not update the bot description")
 
     runner = web.AppRunner(build_app(billing))
     await runner.setup()
@@ -78,7 +89,7 @@ async def run() -> None:
     jobs = [
         asyncio.create_task(_every(RECONCILE_EVERY, billing.reconcile, "reconcile")),
         asyncio.create_task(
-            _every(REMIND_EVERY, lambda: send_reminders(db, backend, notify), "reminders")
+            _every(REMIND_EVERY, lambda: send_reminders(db, backend, notify, billing.tariffs), "reminders")
         ),
     ]
     logger.info("bot started")

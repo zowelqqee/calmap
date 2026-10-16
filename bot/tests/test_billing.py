@@ -86,7 +86,7 @@ async def test_paid_payment_is_delivered_once_and_the_user_is_told(env, linked_u
     assert events[0]["tier"] == "base" and events[0]["amount"] == 299
     record = await _record(env, linked_user)
     assert record.status == PaymentStatus.SUCCEEDED and record.delivered_at is not None
-    assert len([m for u, m in env.sent if u == linked_user and "Оплата получена" in m]) == 1
+    assert len([m for u, m in env.sent if u == linked_user and "Оплата прошла" in m]) == 1
 
 
 async def test_amount_mismatch_is_not_delivered(env, linked_user):
@@ -195,3 +195,22 @@ async def test_payment_is_never_credited_to_a_relinked_account(env, linked_user)
     stored = await _record(env, linked_user)
     assert stored.delivered_at is None and stored.delivery_error
     assert len([m for u, m in env.sent if u == linked_user and "не найден" in m]) == 1
+
+
+async def test_preview_shows_the_end_date_before_paying(env, linked_user):
+    state, until = await env.billing.preview(linked_user, "base")
+    assert state.state == "trial"
+    expected = datetime.now(timezone.utc) + timedelta(days=30)
+    assert abs((until - expected).total_seconds()) < 5
+
+
+async def test_i_have_paid_button_checks_yookassa_at_once(env, linked_user):
+    assert await env.billing.check_payments(linked_user) == "none"
+    await env.billing.start_checkout(linked_user, "pro")
+    assert await env.billing.check_payments(linked_user) == "pending"
+    record = await _record(env, linked_user)
+    env.yoo.succeed(record.yookassa_payment_id)
+    # No webhook arrived: the button alone delivers the payment.
+    assert await env.billing.check_payments(linked_user) == "paid"
+    assert (await _record(env, linked_user)).delivered_at is not None
+    assert len([m for u, m in env.sent if u == linked_user and "Оплата прошла" in m]) == 1

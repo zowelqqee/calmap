@@ -204,6 +204,28 @@ async def test_expiring_lists_accounts_for_bot_reminders(auth_client: AsyncClien
     assert status.json()["state"] == "active"
 
 
+async def test_expiring_can_include_recently_ended_access(auth_client: AsyncClient):
+    telegram_user_id = await pay(auth_client, "pro", days=30)
+    ended = datetime.now(timezone.utc) - timedelta(hours=3)
+    await _set_subscription(auth_client, paid_until=ended)
+
+    def find(rows):
+        return next((e for e in rows if e["telegram_user_id"] == telegram_user_id), None)
+
+    plain = await auth_client.get(
+        "/v1/bot/subscriptions/expiring", params={"within_hours": 72}, headers=BOT_HEADERS
+    )
+    assert find(plain.json()) is None
+    with_ended = await auth_client.get(
+        "/v1/bot/subscriptions/expiring",
+        params={"within_hours": 72, "ended_within_hours": 48},
+        headers=BOT_HEADERS,
+    )
+    entry = find(with_ended.json())
+    assert entry is not None and entry["tier"] == "pro" and entry["state"] != "active"
+    assert abs(datetime.fromisoformat(entry["access_until"]) - ended) < timedelta(seconds=1)
+
+
 async def test_account_deletion_removes_the_telegram_link(auth_client: AsyncClient):
     telegram_user_id = await pay(auth_client, "pro")
     assert (await delete_account(auth_client)).status_code == 204

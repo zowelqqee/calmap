@@ -144,9 +144,11 @@ class CalmapBackend:
         )
         return SubscriptionState.from_json(body["subscription"])
 
-    async def expiring(self, within_hours: int) -> list[Expiring]:
+    async def expiring(self, within_hours: int, ended_within_hours: int = 0) -> list[Expiring]:
         rows = await self._request(
-            "GET", "/v1/bot/subscriptions/expiring", params={"within_hours": within_hours}
+            "GET",
+            "/v1/bot/subscriptions/expiring",
+            params={"within_hours": within_hours, "ended_within_hours": ended_within_hours},
         )
         return [
             Expiring(

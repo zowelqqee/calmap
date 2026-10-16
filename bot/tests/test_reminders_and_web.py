@@ -18,7 +18,8 @@ def test_reminder_kinds():
     assert reminder_kind(now + timedelta(days=2, hours=12), now) == "3d"
     assert reminder_kind(now + timedelta(hours=20), now) == "1d"
     assert reminder_kind(now + timedelta(days=5), now) is None
-    assert reminder_kind(now - timedelta(hours=1), now) is None
+    assert reminder_kind(now - timedelta(hours=1), now) == "ended"
+    assert reminder_kind(now - timedelta(hours=49), now) is None
 
 
 def test_phone_normalisation():
@@ -33,8 +34,8 @@ async def test_reminders_are_sent_once_per_period(env, linked_user):
     env.backend.expiring_rows = [
         {"telegram_user_id": linked_user, "state": "active", "tier": "pro", "access_until": until}
     ]
-    assert await send_reminders(env.db, env.backend_client, env.billing.notify) == 1
-    assert await send_reminders(env.db, env.backend_client, env.billing.notify) == 0
+    assert await send_reminders(env.db, env.backend_client, env.billing.notify, env.billing.tariffs) == 1
+    assert await send_reminders(env.db, env.backend_client, env.billing.notify, env.billing.tariffs) == 0
     assert "PRO закончится" in env.sent[-1][1]
 
 
@@ -47,11 +48,13 @@ async def test_reminders_can_be_turned_off(env, linked_user):
     ]
     async with env.db.session() as session:
         (await session.get(BotUser, linked_user)).reminders_enabled = False
-    assert await send_reminders(env.db, env.backend_client, env.billing.notify) == 0
+    assert await send_reminders(env.db, env.backend_client, env.billing.notify, env.billing.tariffs) == 0
     async with env.db.session() as session:
         (await session.get(BotUser, linked_user)).reminders_enabled = True
-    assert await send_reminders(env.db, env.backend_client, env.billing.notify) == 1
-    assert "/reminders_off" in env.sent[-1][1]
+    assert await send_reminders(env.db, env.backend_client, env.billing.notify, env.billing.tariffs) == 1
+    buttons = [b for row in env.markups[-1].inline_keyboard for b in row]
+    assert any(b.callback_data == "reminders:off" for b in buttons)
+    assert any(b.callback_data == "offer:pro" for b in buttons)
 
 
 async def test_webhook_rereads_the_payment_and_delivers(env, linked_user):

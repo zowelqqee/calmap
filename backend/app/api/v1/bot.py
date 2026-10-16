@@ -116,10 +116,14 @@ async def subscription_status(telegram_user_id: int, session: DbSession) -> Subs
 async def expiring(
     session: DbSession,
     within_hours: int = Query(default=24, ge=1, le=24 * 14),
+    ended_within_hours: int = Query(default=0, ge=0, le=24 * 7),
 ) -> list[ExpiringOut]:
-    """Linked users whose access ends within the window — for bot reminders."""
+    """Linked users whose access ends within the window — for bot reminders — and,
+    with `ended_within_hours`, those whose access ended that recently (their
+    `access_until` is then the moment it ended)."""
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(hours=within_hours)
+    ended_since = now - timedelta(hours=ended_within_hours)
     rows = (
         await session.execute(
             select(Subscription, TelegramLink.telegram_user_id)
@@ -135,19 +139,38 @@ async def expiring(
                     & (Subscription.trial_ends_at > now)
                     & (Subscription.trial_ends_at <= horizon)
                 )
+                | (
+                    Subscription.payment_status.in_(
+                        [PaymentStatus.PAID, PaymentStatus.EXPIRED]
+                    )
+                    & (Subscription.paid_until > ended_since)
+                    & (Subscription.paid_until <= now)
+                )
+                | (
+                    (Subscription.payment_status == PaymentStatus.NONE)
+                    & (Subscription.trial_ends_at > ended_since)
+                    & (Subscription.trial_ends_at <= now)
+                )
             )
         )
     ).all()
     out = []
     for subscription, telegram_user_id in rows:
         access = evaluate(subscription, now)
-        if access.access_until is not None:
-            out.append(
-                ExpiringOut(
-                    telegram_user_id=telegram_user_id,
-                    state=access.state,
-                    tier=access.tier,
-                    access_until=access.access_until,
-                )
+        ended_at = (
+            subscription.paid_until
+            if subscription.payment_status != PaymentStatus.NONE
+            else subscription.trial_ends_at
+        )
+        until = access.access_until or ended_at
+        if until is None:
+            continue
+        out.append(
+            ExpiringOut(
+                telegram_user_id=telegram_user_id,
+                state=access.state,
+                tier=access.tier,
+                access_until=until,
             )
+        )
     return out

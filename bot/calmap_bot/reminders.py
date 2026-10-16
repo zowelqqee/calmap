@@ -1,4 +1,6 @@
-"""Reminders before access ends: three days and one day ahead, once each."""
+"""Reminders: three days and one day before access ends, and once on the day it
+ended — each once per period, with a one-tap renewal button, never to users who
+turned reminders off."""
 
 from __future__ import annotations
 
@@ -7,18 +9,23 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from calmap_bot import texts
+from calmap_bot import keyboards, texts
 from calmap_bot.backend import BackendError, CalmapBackend
 from calmap_bot.billing import Notify
 from calmap_bot.db import BotUser, Database, Reminder
+from calmap_bot.tariffs import Tariff
 
 logger = logging.getLogger(__name__)
+
+
+#: How long after the end the "access ended" message may still be sent.
+ENDED_WINDOW = timedelta(hours=48)
 
 
 def reminder_kind(access_until: datetime, now: datetime) -> str | None:
     left = access_until - now
     if left <= timedelta(0):
-        return None
+        return "ended" if -left <= ENDED_WINDOW else None
     if left <= timedelta(days=1):
         return "1d"
     if left <= timedelta(days=3):
@@ -26,9 +33,13 @@ def reminder_kind(access_until: datetime, now: datetime) -> str | None:
     return None
 
 
-async def send_reminders(db: Database, backend: CalmapBackend, notify: Notify) -> int:
+async def send_reminders(
+    db: Database, backend: CalmapBackend, notify: Notify, tariffs: dict[str, Tariff]
+) -> int:
     try:
-        expiring = await backend.expiring(within_hours=72)
+        expiring = await backend.expiring(
+            within_hours=72, ended_within_hours=int(ENDED_WINDOW.total_seconds() // 3600)
+        )
     except BackendError:
         logger.exception("could not load expiring subscriptions")
         return 0
@@ -60,9 +71,11 @@ async def send_reminders(db: Database, backend: CalmapBackend, notify: Notify) -
                 )
             )
         try:
+            is_trial = item.state in ("trial", "trial_ended") or item.tier in (None, "trial")
             await notify(
                 item.telegram_user_id,
-                texts.reminder(item.tier, item.state == "trial", item.access_until),
+                texts.reminder(kind, item.tier, is_trial, item.access_until),
+                markup=keyboards.reminder(kind, item.tier, is_trial, tariffs),
             )
             sent += 1
         except Exception:  # noqa: BLE001 — the user may have blocked the bot

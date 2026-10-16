@@ -46,9 +46,9 @@ flutter run --dart-define-from-file=config/development.json
 ## Проверки
 
 ```bash
-cd backend && .venv/bin/ruff check app tests && .venv/bin/python -m pytest -q   # 143 теста
+cd backend && .venv/bin/ruff check app tests && .venv/bin/python -m pytest -q   # 144 теста
 cd mobile && flutter analyze && flutter test                                    # 23 теста + 4 golden (только macOS)
-cd bot && .venv/bin/ruff check calmap_bot tests && .venv/bin/python -m pytest -q # 21 тест
+cd bot && .venv/bin/ruff check calmap_bot tests && .venv/bin/python -m pytest -q # 36 тестов
 ```
 
 Тесты backend создают отдельную БД `calmap_test` и прогоняют те же миграции Alembic,

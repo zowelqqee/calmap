@@ -29,8 +29,8 @@ from calmap_bot.yookassa import YooKassa, YooPayment
 
 logger = logging.getLogger(__name__)
 
-#: Sends a message to a Telegram user: notify(telegram_user_id, text).
-Notify = Callable[[int, str], Awaitable[None]]
+#: Sends a message to a Telegram user: notify(telegram_user_id, text, markup=None).
+Notify = Callable[..., Awaitable[None]]
 
 #: The backend accepts paid_until at most 400 days ahead; selling stops a year out.
 MAX_PREPAID = timedelta(days=365)
@@ -169,6 +169,50 @@ class Billing:
         if not yoo.confirmation_url:
             raise CheckoutRefused("no confirmation url")
         return yoo.confirmation_url
+
+    async def preview(self, telegram_user_id: int, tier: str) -> tuple[SubscriptionState, datetime]:
+        """Current state and the end of access if `tier` is bought now — shown
+        before the user pays."""
+        state = await self.backend.status(telegram_user_id)
+        now = datetime.now(timezone.utc)
+        return state, compute_paid_until(now, state, self.tariffs[tier], self.prices)
+
+    async def check_payments(self, telegram_user_id: int) -> str:
+        """The "I have paid" button: ask YooKassa about this user's open payments
+        now instead of waiting for the notification.
+
+        Returns "paid", "pending", "canceled" or "none"."""
+        now = datetime.now(timezone.utc)
+        async with self.db.session() as session:
+            recent = (
+                await session.scalars(
+                    select(Payment)
+                    .where(
+                        Payment.telegram_user_id == telegram_user_id,
+                        Payment.yookassa_payment_id.is_not(None),
+                        Payment.created_at > now - PENDING_WINDOW,
+                    )
+                    .order_by(Payment.created_at.desc())
+                    .limit(5)
+                )
+            ).all()
+        if not recent:
+            return "none"
+        for payment in recent:
+            if payment.status == PaymentStatus.PENDING or (
+                payment.status == PaymentStatus.SUCCEEDED and payment.delivered_at is None
+            ):
+                await self.process_payment(payment.yookassa_payment_id)
+        async with self.db.session() as session:
+            statuses = [await session.get(Payment, payment.id) for payment in recent]
+        newest = statuses[0]
+        if newest.status == PaymentStatus.SUCCEEDED:
+            return "paid" if newest.delivered_at else "pending"
+        if newest.status == PaymentStatus.PENDING:
+            return "pending"
+        if newest.status == PaymentStatus.CANCELED:
+            return "canceled"
+        return "none"
 
     # --------------------------------------------------------------- payments
 
@@ -348,14 +392,15 @@ class Billing:
     # ------------------------------------------------------------- messaging
 
     async def _safe_notify(self, telegram_user_id: int, kind: str, state: SubscriptionState | None = None) -> None:
-        from calmap_bot import texts
+        from calmap_bot import keyboards, texts
 
         message = {
             "paid": lambda: texts.paid(state),
             "orphaned": lambda: texts.PAID_ACCOUNT_MISSING,
             "refunded": lambda: texts.REFUNDED,
         }[kind]()
+        markup = keyboards.after_payment() if kind == "paid" else None
         try:
-            await self.notify(telegram_user_id, message)
+            await self.notify(telegram_user_id, message, markup=markup)
         except Exception:  # noqa: BLE001 — a blocked bot must not undo a payment
             logger.warning("could not message %s", telegram_user_id)

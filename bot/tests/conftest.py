@@ -164,9 +164,11 @@ async def env(db: Database):
     yookassa = YooKassa("shop", "key", transport=httpx.MockTransport(yoo_fake.handler))
     backend = CalmapBackend("http://backend", "secret", transport=httpx.MockTransport(backend_fake.handler))
     sent: list[tuple[int, str]] = []
+    markups: list = []
 
-    async def notify(telegram_user_id: int, text: str) -> None:
+    async def notify(telegram_user_id: int, text: str, markup=None) -> None:
         sent.append((telegram_user_id, text))
+        markups.append(markup)
 
     billing = Billing(
         db, yookassa, backend, notify,
@@ -179,6 +181,7 @@ async def env(db: Database):
 
     e = Env()
     e.db, e.yoo, e.backend, e.billing, e.sent, e.backend_client = db, yoo_fake, backend_fake, billing, sent, backend
+    e.markups = markups
     yield e
     await yookassa.close()
     await backend.close()
