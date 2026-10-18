@@ -164,6 +164,7 @@ async def run_recipe_image_job(
     run_date: date | None = None,
     provider: RecipeImageProvider | None = None,
     session_factory: async_sessionmaker[AsyncSession] = SessionLocal,
+    all_recipes: bool = False,
 ) -> int:
     """Generate missing photos for each user's nearest upcoming plan day."""
     provider = provider or get_recipe_image_provider()
@@ -185,7 +186,7 @@ async def run_recipe_image_job(
             return 0
         try:
             async with session_factory() as session:
-                return await _generate_missing(session, provider, target_date)
+                return await _generate_missing(session, provider, target_date, all_recipes)
         finally:
             await lock_connection.execute(
                 text("SELECT pg_advisory_unlock(:key)"), {"key": JOB_LOCK_KEY}
@@ -193,10 +194,20 @@ async def run_recipe_image_job(
 
 
 async def _generate_missing(
-    session: AsyncSession, provider: RecipeImageProvider, target_date: date
+    session: AsyncSession,
+    provider: RecipeImageProvider,
+    target_date: date,
+    all_recipes: bool = False,
 ) -> int:
-    recipes = await _recipes_for_plans(session, target_date)
+    if all_recipes:
+        recipes = list(
+            (await session.scalars(select(Recipe).where(Recipe.image_url.is_(None)))).all()
+        )
+    else:
+        recipes = await _recipes_for_plans(session, target_date)
     recipe_ids = [recipe.id for recipe in recipes]
+    scope = "the whole catalogue" if all_recipes else f"plans for {target_date}"
+    logger.info("recipe image job: %d recipes without photos in %s", len(recipe_ids), scope)
     generated = 0
     for recipe_id in recipe_ids:
         try:
@@ -246,5 +257,9 @@ async def recipe_image_scheduler() -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_recipe_image_job())
+    import sys
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    # --all: photos for every recipe in the catalogue, not only today's plans.
+    count = asyncio.run(run_recipe_image_job(all_recipes="--all" in sys.argv[1:]))
+    print(f"generated {count} recipe images")
