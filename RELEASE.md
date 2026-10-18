@@ -129,6 +129,20 @@ SSH-туннель и даёт backend-у SOCKS-прокси `egress:1080` вн�
    `docker compose exec backend python -c "import httpx;print(httpx.get('https://api.openai.com/v1/models',proxy='socks5://egress:1080').status_code)"`
    — `401` значит, что туннель работает (OpenAI отвечает «нет ключа»).
 
+### Вход на сервер из-за рубежа
+
+Входящий SSH из-за рубежа к российскому серверу режется, исходящий проходит.
+Контейнер `relay` (в `docker-compose.egress.yml`) держит обратный туннель: порт
+`127.0.0.1:2222` зарубежного сервера ведёт на SSH московского.
+
+1. На зарубежном сервере, чтобы оборванный туннель освобождал порт быстро:
+   ```bash
+   printf 'ClientAliveInterval 30\nClientAliveCountMax 3\n' > /etc/ssh/sshd_config.d/calmap.conf
+   systemctl restart ssh
+   ```
+2. На московском: `docker compose up -d --build relay`.
+3. С компьютера: `ssh -J root@<зарубежный сервер> -p 2222 root@127.0.0.1`.
+
 ### Бэкапы
 
 Сервис `backup` раз в сутки пишет `pg_dump` в `BACKUP_DIR` (по умолчанию

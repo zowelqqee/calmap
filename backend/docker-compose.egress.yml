@@ -29,5 +29,25 @@ services:
       retries: 3
     networks: [internal]
 
+  # SSH to this server from abroad through the server abroad (relay.sh).
+  relay:
+    build: ./docker/egress
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["/bin/sh", "/relay.sh"]
+    environment:
+      EGRESS_HOST: ${EGRESS_HOST:?set EGRESS_HOST in .env}
+      EGRESS_USER: ${EGRESS_USER:-tunnel}
+      RELAY_PORT: ${RELAY_PORT:-2222}
+    volumes:
+      - ./docker/egress/id_ed25519:/egress_key:ro
+      - egress_state:/state
+    networks: [internal]
+
 volumes:
   egress_state:
