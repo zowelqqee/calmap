@@ -100,6 +100,35 @@ REG.RU) и просто ждёт минуту перед запросом к Let
 --days 30` вместо `run` — Caddy подхватит новый сертификат сам. Поставьте
 напоминание; `docker compose logs certs` пишет дату последнего сертификата.
 
+### Прокси для OpenAI через SSH
+
+Серверы в России обращаются к OpenAI только через сервер за рубежом. Обычный SOCKS
+до зарубежного сервера по пути режется, SSH проходит: контейнер `egress` держит
+SSH-туннель и даёт backend-у SOCKS-прокси `egress:1080` внутри сети compose.
+
+1. На московском сервере создайте ключ туннеля и выведите публичную часть:
+   ```bash
+   cd /opt/calmap/backend
+   ssh-keygen -t ed25519 -N "" -C calmap-egress -f docker/egress/id_ed25519
+   cat docker/egress/id_ed25519.pub
+   ```
+2. На зарубежном сервере — пользователь, которому разрешена только переадресация:
+   ```bash
+   useradd -m -s /usr/sbin/nologin tunnel
+   mkdir -p /home/tunnel/.ssh
+   echo 'restrict,port-forwarding <строка из id_ed25519.pub>' > /home/tunnel/.ssh/authorized_keys
+   chown -R tunnel:tunnel /home/tunnel/.ssh && chmod 700 /home/tunnel/.ssh && chmod 600 /home/tunnel/.ssh/authorized_keys
+   ```
+3. В `.env` московского сервера:
+   ```dotenv
+   COMPOSE_FILE=docker-compose.yml:docker-compose.dns-certs.yml:docker-compose.egress.yml
+   EGRESS_HOST=<IP зарубежного сервера>
+   OPENAI_PROXY_URL=socks5://egress:1080
+   ```
+4. `docker compose up -d --build egress backend`; проверка:
+   `docker compose exec backend python -c "import httpx;print(httpx.get('https://api.openai.com/v1/models',proxy='socks5://egress:1080').status_code)"`
+   — `401` значит, что туннель работает (OpenAI отвечает «нет ключа»).
+
 ### Бэкапы
 
 Сервис `backup` раз в сутки пишет `pg_dump` в `BACKUP_DIR` (по умолчанию

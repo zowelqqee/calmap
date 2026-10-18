@@ -30,3 +30,6 @@ mobile/test/failures/
 
 # Build artifacts belong in GitHub Releases, not in git
 /*.zip
+
+# SSH key of the AI egress tunnel
+backend/docker/egress/id_ed25519*
