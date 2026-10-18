@@ -4,7 +4,7 @@
 # "Timeout after connect"). Enable by adding to .env:
 #
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.dns-certs.yml
-#   REGRU_USERNAME=<REG.RU login>
+#   REGRU_USERNAME=<REG.RU login>          (both empty: manual mode)
 #   REGRU_PASSWORD=<REG.RU API password>
 #
 # then `docker compose --profile https up -d`. See RELEASE.md.
@@ -25,8 +25,9 @@ services:
       LEGO_EMAIL: ${LEGAL_CONTACT_EMAIL:?set LEGAL_CONTACT_EMAIL in .env}
       # Not LEGO_SERVER: lego reads that name itself, and an empty value breaks it.
       ACME_SERVER: ${ACME_SERVER:-}
-      REGRU_USERNAME: ${REGRU_USERNAME:?set REGRU_USERNAME in .env}
-      REGRU_PASSWORD: ${REGRU_PASSWORD:?set REGRU_PASSWORD in .env}
+      # Empty: manual mode, the TXT record is added by hand (RELEASE.md).
+      REGRU_USERNAME: ${REGRU_USERNAME:-}
+      REGRU_PASSWORD: ${REGRU_PASSWORD:-}
       # REG.RU applies DNS changes in minutes, not seconds.
       REGRU_PROPAGATION_TIMEOUT: "1800"
       REGRU_POLLING_INTERVAL: "30"

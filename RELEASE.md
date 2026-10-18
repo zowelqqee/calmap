@@ -75,6 +75,26 @@ curl https://api.example.ru/health      # {"status":"ok","database":"ok",...}
    получение занимает до 30 минут (REG.RU применяет изменения DNS не сразу).
    Caddy стартует, когда сертификат готов.
 
+### Сертификат через DNS вручную (если API REG.RU недоступен с сервера)
+
+`COMPOSE_FILE` как выше, `REGRU_USERNAME` и `REGRU_PASSWORD` пустые. Получение:
+
+```bash
+docker compose run --rm -it --entrypoint /lego certs \
+  --accept-tos --email <LEGAL_CONTACT_EMAIL> --dns manual \
+  --domains <DOMAIN> --path /certs run
+```
+
+lego покажет запись вида `_acme-challenge.api.calmap.ru. 120 IN TXT "…"`. В панели
+DNS REG.RU создайте TXT-запись: имя `_acme-challenge.api`, значение — строка в
+кавычках (без кавычек). Подождите 5–10 минут (`dig +short TXT
+_acme-challenge.api.calmap.ru` показывает значение) и нажмите Enter. Затем
+`docker compose --profile https up -d`: Caddy запустится с сертификатом.
+
+Сертификат действует 90 дней. **Через 60 дней** повторите ту же команду с `renew
+--days 30` вместо `run` — Caddy подхватит новый сертификат сам. Поставьте
+напоминание; `docker compose logs certs` пишет дату последнего сертификата.
+
 ### Бэкапы
 
 Сервис `backup` раз в сутки пишет `pg_dump` в `BACKUP_DIR` (по умолчанию
