@@ -15,8 +15,8 @@ set -eu
 LEGO=$(command -v lego || echo /lego)
 
 set -- --accept-tos --email "$LEGO_EMAIL" --dns regru --domains "$DOMAIN" --path /certs
-if [ -n "${LEGO_SERVER:-}" ]; then
-  set -- "$@" --server "$LEGO_SERVER"
+if [ -n "${ACME_SERVER:-}" ]; then
+  set -- "$@" --server "$ACME_SERVER"
 fi
 
 if [ ! -s "/certs/certificates/$DOMAIN.crt" ]; then

@@ -23,7 +23,8 @@ services:
     environment:
       DOMAIN: ${DOMAIN:?set DOMAIN in .env}
       LEGO_EMAIL: ${LEGAL_CONTACT_EMAIL:?set LEGAL_CONTACT_EMAIL in .env}
-      LEGO_SERVER: ${LEGO_SERVER:-}
+      # Not LEGO_SERVER: lego reads that name itself, and an empty value breaks it.
+      ACME_SERVER: ${ACME_SERVER:-}
       REGRU_USERNAME: ${REGRU_USERNAME:?set REGRU_USERNAME in .env}
       REGRU_PASSWORD: ${REGRU_PASSWORD:?set REGRU_PASSWORD in .env}
       # REG.RU applies DNS changes in minutes, not seconds.
