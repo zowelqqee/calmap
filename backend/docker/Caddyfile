@@ -1,6 +1,11 @@
 {$DOMAIN} {
 	encode zstd gzip
 
+	# Certificates: automatic by default (Let's Encrypt over HTTP). With the DNS
+	# certificates override (docker-compose.dns-certs.yml) a file here points Caddy
+	# at certificates the certs service obtained through the DNS of REG.RU.
+	import /etc/caddy/tls.d/*.caddy
+
 	# Access log to stdout; docker rotates it (10 MB × 5). Contains client IPs and
 	# paths, never tokens: the API takes credentials in headers and bodies only.
 	log {

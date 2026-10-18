@@ -51,6 +51,30 @@ curl https://api.example.ru/health      # {"status":"ok","database":"ok",...}
 Проверьте в браузере: `https://api.example.ru/legal/privacy` и `/legal/terms` —
 в тексте должны стоять ваши реквизиты.
 
+### Сертификат через DNS (если Let's Encrypt не достучался до сервера)
+
+Признак — в `docker compose logs caddy` ошибки `Timeout after connect`: часть
+зарубежных сетей не доходит до российского сервера, а Let's Encrypt проверяет домен
+из нескольких стран. Тогда сертификат получается через DNS REG.RU: контейнер `certs`
+(lego) записывает TXT-запись через API REG.RU, к серверу никто не подключается.
+Продление — само, за 30 дней до окончания; Caddy подхватывает новый сертификат.
+
+1. Домен должен обслуживаться DNS-серверами REG.RU `ns1.reg.ru` и `ns2.reg.ru`
+   (карточка домена → «DNS-серверы»). Если указаны другие — переключите на
+   «DNS-серверы REG.RU» и заново создайте A-записи (`@` и `api` → IP сервера);
+   переключение `.ru` занимает до суток.
+2. REG.RU → «Настройки» → «Настройки API»: задайте альтернативный пароль для API и
+   разрешите доступ с IP сервера.
+3. В `.env`:
+   ```dotenv
+   COMPOSE_FILE=docker-compose.yml:docker-compose.dns-certs.yml
+   REGRU_USERNAME=логин REG.RU
+   REGRU_PASSWORD=пароль для API из шага 2
+   ```
+4. `docker compose --profile https up -d`, затем `docker compose logs -f certs`:
+   получение занимает до 30 минут (REG.RU применяет изменения DNS не сразу).
+   Caddy стартует, когда сертификат готов.
+
 ### Бэкапы
 
 Сервис `backup` раз в сутки пишет `pg_dump` в `BACKUP_DIR` (по умолчанию
