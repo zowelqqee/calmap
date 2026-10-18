@@ -73,7 +73,8 @@ class Settings(BaseSettings):
     recipe_image_model: str = "gpt-image-2"
     recipe_image_size: str = "1536x1024"
     recipe_image_quality: Literal["low", "medium", "high", "auto"] = "low"
-    # Shared egress proxy for OpenAI-compatible requests. Keep the old
+    # Egress proxy for AI providers (OpenAI-compatible, Gemini, recipe images):
+    # only those requests use it (app/services/llm_http.py). Keep the old
     # RECIPE_IMAGE_PROXY_URL name as a backwards-compatible alias.
     openai_proxy_url: str = Field(
         default="",
