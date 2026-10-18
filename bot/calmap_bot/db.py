@@ -99,7 +99,14 @@ class Database:
 
     async def create_schema(self) -> None:
         async with self.engine.begin() as connection:
-            await connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
+            # CREATE SCHEMA IF NOT EXISTS needs CREATE on the database even when the
+            # schema exists; the production role (calmap_bot) owns schema "bot" but
+            # may not create schemas, so create it only when it is really missing.
+            exists = await connection.scalar(
+                text("SELECT 1 FROM pg_namespace WHERE nspname = :name"), {"name": SCHEMA}
+            )
+            if not exists:
+                await connection.execute(text(f"CREATE SCHEMA {SCHEMA}"))
             await connection.run_sync(Base.metadata.create_all)
 
     @asynccontextmanager
