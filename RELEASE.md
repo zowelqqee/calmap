@@ -82,12 +82,15 @@ curl https://api.example.ru/health      # {"status":"ok","database":"ok",...}
 ```bash
 docker compose run --rm -it --entrypoint /lego certs \
   --accept-tos --email <LEGAL_CONTACT_EMAIL> --dns manual \
+  --dns.resolvers 77.88.8.8:53 --dns.disable-cp \
   --domains <DOMAIN> --path /certs run
 ```
 
 lego покажет запись вида `_acme-challenge.api.calmap.ru. 120 IN TXT "…"`. В панели
 DNS REG.RU создайте TXT-запись: имя `_acme-challenge.api`, значение — строка в
-кавычках (без кавычек). Подождите 5–10 минут (`dig +short TXT
+кавычках (без кавычек); при каждом запуске значение новое. `--dns.resolvers` и
+`--dns.disable-cp` нужны, если сервер не достаёт до DNS-серверов REG.RU напрямую:
+запись проверяется через публичный DNS. Подождите 5–10 минут (`dig +short TXT
 _acme-challenge.api.calmap.ru` показывает значение) и нажмите Enter. Затем
 `docker compose --profile https up -d`: Caddy запустится с сертификатом.
 
