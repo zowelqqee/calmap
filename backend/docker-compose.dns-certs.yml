@@ -10,7 +10,7 @@
 # then `docker compose --profile https up -d`. See RELEASE.md.
 services:
   certs:
-    image: goacme/lego:v4.19.2
+    image: goacme/lego:v4.21.0
     restart: unless-stopped
     profiles: ["https"]
     logging:

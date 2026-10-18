@@ -82,16 +82,18 @@ curl https://api.example.ru/health      # {"status":"ok","database":"ok",...}
 ```bash
 docker compose run --rm -it --entrypoint /lego certs \
   --accept-tos --email <LEGAL_CONTACT_EMAIL> --dns manual \
-  --dns.resolvers 77.88.8.8:53 --dns.disable-cp \
+  --dns.propagation-wait 60s \
   --domains <DOMAIN> --path /certs run
 ```
 
 lego покажет запись вида `_acme-challenge.api.calmap.ru. 120 IN TXT "…"`. В панели
 DNS REG.RU создайте TXT-запись: имя `_acme-challenge.api`, значение — строка в
-кавычках (без кавычек); при каждом запуске значение новое. `--dns.resolvers` и
-`--dns.disable-cp` нужны, если сервер не достаёт до DNS-серверов REG.RU напрямую:
-запись проверяется через публичный DNS. Подождите 5–10 минут (`dig +short TXT
-_acme-challenge.api.calmap.ru` показывает значение) и нажмите Enter. Затем
+кавычках (без кавычек); при каждом запуске значение новое. Проверьте запись прямо
+на DNS-серверах REG.RU, с любого компьютера (публичные DNS кэшируют старое значение
+до часа): `dig +short TXT _acme-challenge.api.calmap.ru @ns1.reg.ru` и то же с
+`@ns2.reg.ru`. Когда оба показывают новое значение, нажмите Enter.
+`--dns.propagation-wait` отключает проверку записи с сервера (он не достаёт до DNS
+REG.RU) и просто ждёт минуту перед запросом к Let's Encrypt. Затем
 `docker compose --profile https up -d`: Caddy запустится с сертификатом.
 
 Сертификат действует 90 дней. **Через 60 дней** повторите ту же команду с `renew
