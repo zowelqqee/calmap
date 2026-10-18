@@ -113,9 +113,17 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
 
     async def tariffs(target: Message | CallbackQuery, telegram_user_id: int) -> None:
         if await bot_user(telegram_user_id) is None:
-            await refuse(target, texts.NEED_LINK)
+            # Prices and terms are public: shown before the account is linked.
+            await show(
+                target,
+                texts.tariffs_screen(billing.tariffs, terms_url, settings.seller_info, linked=False),
+            )
             return
-        await show(target, texts.tariffs_screen(billing.tariffs), keyboards.tariffs(billing.tariffs))
+        await show(
+            target,
+            texts.tariffs_screen(billing.tariffs, terms_url, settings.seller_info),
+            keyboards.tariffs(billing.tariffs),
+        )
 
     async def set_reminders(target: Message | CallbackQuery, enabled: bool) -> None:
         telegram_user_id = target.from_user.id
@@ -142,7 +150,7 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
         """«💳 Продлить»: straight to the offer for the current tariff, with the new
         end date; without a paid tariff yet — to the tariffs."""
         if await bot_user(message.from_user.id) is None:
-            await refuse(message, texts.NEED_LINK)
+            await tariffs(message, message.from_user.id)
             return
         try:
             state = await backend.status(message.from_user.id)
@@ -192,6 +200,7 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
             reply_markup=keyboards.share_phone(),
             disable_web_page_preview=True,
         )
+        await tariffs(message, message.from_user.id)
 
     @router.message(F.contact)
     async def contact(message: Message) -> None:

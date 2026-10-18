@@ -193,7 +193,9 @@ def reminders_button(enabled: bool) -> str:
 # ------------------------------------------------------------------ tariffs
 
 
-def tariffs_screen(tariffs: dict[str, Tariff]) -> str:
+def tariffs_screen(
+    tariffs: dict[str, Tariff], terms_url: str = "", seller: str = "", linked: bool = True
+) -> str:
     blocks = ["<b>Тарифы Calmap</b>"]
     for code, tariff in tariffs.items():
         badge = " ⭐ максимум возможностей" if code == "pro" else ""
@@ -202,7 +204,17 @@ def tariffs_screen(tariffs: dict[str, Tariff]) -> str:
             f"<b>{tariff.title}</b> — {tariff.price_rub} ₽ за {days_word(tariff.days)} "
             f"({per_day(tariff)}){badge}\n{features}"
         )
-    blocks.append("Разовая оплата картой или через СБП. Без автопродления.")
+    footer = ["Разовая оплата картой или через СБП. Без автопродления."]
+    if terms_url:
+        footer.append(f"Условия — в {link(terms_url, 'Пользовательском соглашении')}.")
+    if seller:
+        footer.append(f"Продавец: {escape(seller)}.")
+    blocks.append("\n".join(footer))
+    if not linked:
+        blocks.append(
+            "Чтобы оформить подписку, нажмите «📱 Поделиться номером» внизу — бот найдёт "
+            "ваш аккаунт Calmap."
+        )
     return "\n\n".join(blocks)
 
 

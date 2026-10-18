@@ -92,7 +92,10 @@ async def test_new_user_links_by_own_contact_and_sees_the_card(env, chat):
     phone = "79990000001"
     env.backend.add_account(phone, uid)
     await chat.send(uid, text="/start")
-    assert "Поделиться номером" in chat.session.texts()[-1]
+    welcome, prices = chat.session.texts()[-2:]
+    assert "Поделиться номером" in welcome
+    # Prices, terms and the seller are visible before linking.
+    assert "299 ₽" in prices and "499 ₽" in prices and "Пользовательском соглашении" in prices
 
     # Someone else's contact is refused.
     await chat.send(uid, contact=Contact(phone_number=phone, first_name="x", user_id=uid + 1))
