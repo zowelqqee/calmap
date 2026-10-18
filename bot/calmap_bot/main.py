@@ -9,6 +9,7 @@ import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 from aiohttp import web
@@ -48,7 +49,13 @@ async def run() -> None:
 
     db = Database(settings.database_url)
     await db.create_schema()
-    bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    # Telegram through the tunnel abroad when TELEGRAM_PROXY_URL is set.
+    session = AiohttpSession(proxy=settings.telegram_proxy_url) if settings.telegram_proxy_url else None
+    bot = Bot(
+        settings.bot_token,
+        session=session,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     backend = CalmapBackend(settings.calmap_api_url, settings.telegram_bot_api_secret)
     yookassa = YooKassa(settings.yookassa_shop_id, settings.yookassa_secret_key)
 

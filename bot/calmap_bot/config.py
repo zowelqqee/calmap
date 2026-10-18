@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     )
     support_contact: str = Field(default="", validation_alias="LEGAL_CONTACT_EMAIL")
 
+    #: Proxy for Telegram traffic, e.g. socks5://egress:1080 (the SSH tunnel abroad).
+    #: Empty: direct. YooKassa and the backend are always reached directly.
+    telegram_proxy_url: str = ""
+
     #: Port of the YooKassa webhook and health endpoint inside the container.
     web_port: int = 8080
 
