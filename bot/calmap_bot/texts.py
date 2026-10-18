@@ -207,8 +207,6 @@ def tariffs_screen(
     footer = ["Разовая оплата картой или через СБП. Без автопродления."]
     if terms_url:
         footer.append(f"Условия — в {link(terms_url, 'Пользовательском соглашении')}.")
-    if seller:
-        footer.append(f"Продавец: {escape(seller)}.")
     blocks.append("\n".join(footer))
     if not linked:
         blocks.append(
@@ -247,8 +245,6 @@ def confirm(
         "Разовая оплата картой или через СБП. Без автопродления и скрытых списаний.",
         f"Оплачивая, вы принимаете {link(terms_url, 'Пользовательское соглашение')}.",
     ]
-    if seller:
-        lines.append(f"Продавец: {escape(seller)}.")
     return "\n".join(lines)
 
 
@@ -346,7 +342,9 @@ def reminder(
 def help_text(support: str, seller: str = "") -> str:
     contact = f"\n\n💬 Поддержка: {escape(support)}" if support else ""
     if seller:
-        contact += f"\nПродавец: {escape(seller)}"
+        # The seller's legal details (consumer protection law, art. 9) live here and
+        # in the terms; prices and offers show the service name only.
+        contact += f"\n\nСервис Calmap. Продавец: {escape(seller)}"
     return (
         "<b>Частые вопросы</b>\n\n"
         "<b>Когда откроется доступ?</b>\nСразу после оплаты, обычно в течение минуты. "

@@ -170,7 +170,7 @@ async def test_preview_mode_without_yookassa_shows_everything_but_paying(env, li
     await dispatcher.feed_update(bot, update(callback_query=CallbackQuery(
         id="1", from_user=user, chat_instance="x", data="offer:base", message=card)))
     offer = session.texts()[-1]
-    assert "299 ₽" in offer and "Продавец: ИП Тестов" in offer
+    assert "299 ₽" in offer and "ИП Тестов" not in offer
     await dispatcher.feed_update(bot, update(callback_query=CallbackQuery(
         id="2", from_user=user, chat_instance="x", data="pay:base", message=card)))
     assert any("Оплата подключается" in a for a in session.alerts())
@@ -184,4 +184,4 @@ async def test_preview_mode_without_yookassa_shows_everything_but_paying(env, li
 def test_help_names_the_seller():
     from calmap_bot import texts
 
-    assert "Продавец: ИП Тестов" in texts.help_text("support@calmap.ru", "ИП Тестов")
+    assert "Сервис Calmap. Продавец: ИП Тестов" in texts.help_text("support@calmap.ru", "ИП Тестов")

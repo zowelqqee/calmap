@@ -103,7 +103,7 @@ Telegram-бот продаёт подписку BASE и PRO через ЮKassa �
 | `YOOKASSA_RECEIPTS`, `YOOKASSA_VAT_CODE` | чеки 54-ФЗ и код НДС (1 — без НДС) |
 | `PRICE_BASE_RUB`, `PRICE_PRO_RUB`, `SUBSCRIPTION_DAYS` | цены и срок (по умолчанию 299, 499, 30) |
 | `LEGAL_CONTACT_EMAIL` | контакт поддержки в `/help` |
-| `SELLER_INFO` | продавец в условиях оплаты и в помощи: «ИП …, ИНН …, ОГРНИП …» (по умолчанию `LEGAL_OPERATOR_NAME`) |
+| `SELLER_INFO` | продавец в разделе «Помощь» (у цен — только «Calmap»): «ИП …, ИНН …, ОГРНИП …» (по умолчанию `LEGAL_OPERATOR_NAME`) |
 | `TELEGRAM_PROXY_URL` | `socks5://egress:1080` — Telegram через SSH-туннель за рубеж (`docker-compose.egress.yml`); пусто — напрямую |
 | `PUBLIC_BASE_URL` | `https://`-домен для ссылок на соглашение и политику (обязателен) |
 
