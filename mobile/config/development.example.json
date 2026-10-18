@@ -1,6 +1,5 @@
 {
   "API_BASE_URL": "http://127.0.0.1:8000",
-  "GOOGLE_SERVER_CLIENT_ID": "replace-with-google-web-client-id.apps.googleusercontent.com",
-  "VK_CLIENT_ID": "replace-with-vk-client-id",
+  "VK_CLIENT_ID": "",
   "VK_REDIRECT_URL": "ru.calmap.app:/oauth"
 }

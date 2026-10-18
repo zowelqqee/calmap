@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../core/api_client.dart';
+import '../core/legal.dart';
 import '../core/theme.dart';
 
 class DiaryScreen extends StatefulWidget {
@@ -40,17 +42,34 @@ class _DiaryScreenState extends State<DiaryScreen> {
   }
 
   Future<void> _pick(ImageSource source) async {
-    final file = await picker.pickImage(
-      source: source,
-      imageQuality: 82,
-      maxWidth: 1600,
-    );
+    final XFile? file;
+    try {
+      file = await picker.pickImage(
+        source: source,
+        imageQuality: 82,
+        maxWidth: 1600,
+        // Strip EXIF (GPS, device) before the photo leaves the phone.
+        requestFullMetadata: false,
+      );
+    } on PlatformException {
+      _snack(
+        source == ImageSource.camera
+            ? 'Нет доступа к камере. Разрешите его в настройках телефона.'
+            : 'Нет доступа к фото. Разрешите его в настройках телефона.',
+      );
+      return;
+    }
     if (file == null) return;
     if (mounted) setState(() => loading = true);
     try {
-      final recognition = await widget.api.uploadImage(
-        bytes: await file.readAsBytes(),
-        filename: file.name,
+      final bytes = await file.readAsBytes();
+      final filename = file.name;
+      if (!mounted) return;
+      // The first photo asks for the consent to send it to the recognition service.
+      final recognition = await withConsent(
+        context,
+        widget.api,
+        () => widget.api.uploadImage(bytes: bytes, filename: filename),
       );
       await _confirmRecognition(recognition);
       await _load();
@@ -316,7 +335,7 @@ class _DiaryScreenState extends State<DiaryScreen> {
     if (accepted != true) return;
     try {
       final source = day.subtract(const Duration(days: 1));
-      await widget.api.post('/v1/diary/repeat', {
+      await widget.api.postList('/v1/diary/repeat', {
         'source_day': _formatDay(source),
         'target_day': isoDay,
         'meal_type': mealType,

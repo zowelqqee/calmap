@@ -11,8 +11,9 @@ from app.domain.enums import MealType
 class GeneratePlanRequest(BaseModel):
     date_from: date | None = None
     days: int = Field(default=7, ge=1, le=28)
-    meal_slots: list[MealType] | None = None
-    exclude_recipe_slugs: list[str] = Field(default_factory=list)
+    # Bounded: the solver's work grows with the number of slots.
+    meal_slots: list[MealType] | None = Field(default=None, min_length=1, max_length=6)
+    exclude_recipe_slugs: list[str] = Field(default_factory=list, max_length=200)
 
 
 class PlanItemOut(BaseModel):

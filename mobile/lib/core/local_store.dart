@@ -16,10 +16,21 @@ class LocalStore {
     'outbox': <dynamic>[],
   };
 
+  File? _installMarker;
+
   Future<void> open() async {
     if (_file != null) return;
-    final directory = await getApplicationSupportDirectory();
-    _file = File('${directory.path}/calmap_local_store.json');
+    // The cache holds health data. It lives in the platform cache directory,
+    // which is excluded from iCloud/iTunes and Android Auto Backup and from
+    // device-to-device transfer; the OS may purge it under storage pressure,
+    // which only costs an offline copy.
+    final cache = await getApplicationCacheDirectory();
+    final support = await getApplicationSupportDirectory();
+    _installMarker = File('${support.path}/.calmap_installed');
+    _file = File('${cache.path}/calmap_local_store.json');
+    // Earlier versions kept the cache in Application Support (backed up).
+    final legacy = File('${support.path}/calmap_local_store.json');
+    if (await legacy.exists()) await legacy.delete();
     if (!await _file!.exists()) return;
 
     try {
@@ -39,6 +50,18 @@ class LocalStore {
         'outbox': <dynamic>[],
       };
     }
+  }
+
+  /// True until [markLaunched]: app files are removed on uninstall, unlike the
+  /// keychain, so a missing marker means a fresh install.
+  Future<bool> isFirstLaunch() async {
+    await open();
+    return !(await _installMarker!.exists());
+  }
+
+  Future<void> markLaunched() async {
+    await open();
+    await _installMarker!.create(recursive: true);
   }
 
   Future<dynamic> readResponse(String key) async {
@@ -97,7 +120,17 @@ class LocalStore {
     await _persist();
   }
 
-  Future<void> _persist() async {
+  Future<void> _writing = Future<void>.value();
+
+  /// Writes are chained: parallel requests would otherwise share the temporary
+  /// file and fail each other's rename.
+  Future<void> _persist() {
+    final next = _writing.catchError((_) {}).then((_) => _writeNow());
+    _writing = next;
+    return next;
+  }
+
+  Future<void> _writeNow() async {
     final file = _file;
     if (file == null) return;
     await file.parent.create(recursive: true);

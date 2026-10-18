@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/api_client.dart';
+import '../core/subscription.dart';
 import '../core/theme.dart';
 import 'assistant_screen.dart';
 import 'diary_screen.dart';
@@ -11,8 +12,11 @@ class DashboardScreen extends StatefulWidget {
     required this.api,
     required this.onSelectTab,
     required this.onLogout,
+    this.subscription,
     super.key,
   });
+
+  final SubscriptionStatus? subscription;
 
   final ApiClient api;
   final ValueChanged<int> onSelectTab;
@@ -28,6 +32,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Map<String, dynamic>? plan;
   Map<String, dynamic>? workout;
   Map<String, dynamic>? progress;
+  Map<String, dynamic>? diary;
   bool loading = true;
 
   @override
@@ -38,19 +43,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _load() async {
     setState(() => loading = true);
+    Future<Map<String, dynamic>?> optional(String path) => widget.api
+        .getAny(path)
+        .then<Map<String, dynamic>?>(
+          (raw) => raw is Map ? Map<String, dynamic>.from(raw) : null,
+          onError: (_) => null,
+        );
     try {
-      me = await widget.api.get('/v1/auth/me');
-      targets = await widget.api.get('/v1/me/targets');
-      try {
-        plan = await widget.api.get('/v1/meal-plans/current');
-      } catch (_) {}
-      try {
-        final raw = await widget.api.getAny('/v1/workouts/today');
-        workout = raw is Map ? Map<String, dynamic>.from(raw) : null;
-      } catch (_) {}
-      try {
-        progress = await widget.api.get('/v1/progress/overview');
-      } catch (_) {}
+      final now = DateTime.now();
+      final today =
+          '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+      // Each card degrades on its own: a missing plan must not hide the rest.
+      final results = await Future.wait([
+        widget.api.get('/v1/auth/me'),
+        optional('/v1/me/targets'),
+        optional('/v1/meal-plans/current'),
+        optional('/v1/workouts/today'),
+        optional('/v1/progress/overview'),
+        optional('/v1/diary/$today'),
+      ]);
+      me = results[0];
+      targets = results[1];
+      plan = results[2];
+      workout = results[3];
+      progress = results[4];
+      diary = results[5];
     } on ApiException catch (exception) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -60,6 +77,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } finally {
       if (mounted) setState(() => loading = false);
     }
+  }
+
+  /// Warning shown during the last three days of the trial or a paid period.
+  String? get _expiryNotice {
+    final status = widget.subscription;
+    final days = status?.daysLeft;
+    if (status == null || !status.hasAccess || days == null || days > 3) {
+      return null;
+    }
+    final left = days <= 1 ? 'меньше суток' : '$days ${_daysWord(days)}';
+    return status.isTrial
+        ? 'Пробный период закончится через $left (${status.untilLabel})'
+        : 'Подписка ${status.tier?.toUpperCase() ?? ''} закончится через $left '
+              '(${status.untilLabel}). Продлите её заранее.';
+  }
+
+  static String _daysWord(int n) {
+    final mod100 = n % 100;
+    final mod10 = n % 10;
+    if (mod100 >= 11 && mod100 <= 14) return 'дней';
+    if (mod10 == 1) return 'день';
+    if (mod10 >= 2 && mod10 <= 4) return 'дня';
+    return 'дней';
+  }
+
+  String get _greeting {
+    final hour = DateTime.now().hour;
+    final hello = hour < 5
+        ? 'Доброй ночи'
+        : hour < 12
+        ? 'Доброе утро'
+        : hour < 18
+        ? 'Добрый день'
+        : 'Добрый вечер';
+    final name = me?['name']?.toString().trim() ?? '';
+    return name.isEmpty ? hello : '$hello, $name';
+  }
+
+  /// Share of today's calorie target already logged in the diary.
+  double get _nutritionProgress {
+    final eaten = (diary?['kcal'] as num?)?.toDouble() ?? 0;
+    final target = (targets?['target_kcal'] as num?)?.toDouble() ?? 0;
+    return target <= 0 ? 0 : (eaten / target).clamp(0.0, 1.0).toDouble();
   }
 
   String get _date {
@@ -92,7 +152,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _push(Widget screen) => Navigator.of(
     context,
-  ).push(MaterialPageRoute<void>(builder: (_) => screen));
+  ).push(MaterialPageRoute<void>(builder: (_) => SubPage(child: screen)));
 
   @override
   Widget build(BuildContext context) => SafeArea(
@@ -109,7 +169,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Добрый день, ${me?['name'] ?? 'Алексей'}',
+                      _greeting,
                       style: Theme.of(context).textTheme.headlineLarge,
                     ),
                     const SizedBox(height: 6),
@@ -164,6 +224,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           const SizedBox(height: 18),
+          if (_expiryNotice case final notice?) ...[
+            Card(
+              color: champagne.withValues(alpha: .35),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.schedule_rounded, color: forest),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            notice,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           if (loading)
             const Padding(
               padding: EdgeInsets.all(40),
@@ -175,7 +261,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               title: 'Питание',
               subtitle:
                   '${targets?['target_kcal'] ?? '—'} ккал · Б ${targets?['protein_g'] ?? '—'} / Ж ${targets?['fat_g'] ?? '—'} / У ${targets?['carbs_g'] ?? '—'}',
-              progress: .67,
+              progress: _nutritionProgress,
               onTap: () => widget.onSelectTab(1),
             ),
             _dashboardCard(

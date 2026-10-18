@@ -12,6 +12,10 @@ from datetime import date, timedelta
 import pytest
 from httpx import AsyncClient
 
+from sqlalchemy import text
+
+from tests.conftest import delete_account, last_sms_code, new_phone, pay, sign_in
+
 ONBOARDING_STEPS = [
     ("personal", {"sex": "male", "birth_date": "1997-04-12", "height_cm": 182, "weight_kg": 84}),
     ("goal", {"goal": "lose", "rate_pct": 0.18, "target_weight_kg": 78}),
@@ -35,31 +39,83 @@ async def test_health(client: AsyncClient):
     response = await client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert response.json()["database"] == "ok"
 
 
-async def test_register_rejects_duplicate_email(client: AsyncClient):
-    payload = {"email": "dupe@example.com", "password": "correct-horse-battery"}
-    assert (await client.post("/v1/auth/register", json=payload)).status_code == 201
-    assert (await client.post("/v1/auth/register", json=payload)).status_code == 409
+@pytest.mark.parametrize(
+    "page",
+    ["privacy", "terms", "consent", "health-consent", "ai-consent", "recommendations"],
+)
+async def test_legal_pages_are_public_html(client: AsyncClient, page: str):
+    response = await client.get(f"/legal/{page}")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "<h1>" in response.text and "{operator}" not in response.text
+    assert (await client.get("/legal/unknown")).status_code == 404
 
 
-async def test_login_returns_tokens_and_rejects_wrong_password(client: AsyncClient):
-    payload = {"email": "login@example.com", "password": "correct-horse-battery"}
-    await client.post("/v1/auth/register", json=payload)
-
-    good = await client.post("/v1/auth/login", json=payload)
-    assert good.status_code == 200
-    assert good.json()["access_token"]
-
-    bad = await client.post(
-        "/v1/auth/login", json={**payload, "password": "wrong-password-here"}
+async def test_phone_sign_in_creates_then_reuses_the_account(client: AsyncClient):
+    phone = new_phone()
+    first = await sign_in(client, f"+7 ({phone[1:4]}) {phone[4:7]}-{phone[7:9]}-{phone[9:]}")
+    again = await sign_in(client, "8" + phone[1:])
+    me = await client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {again['access_token']}"}
     )
-    assert bad.status_code == 401
+    assert me.json()["phone"] == phone
+    first_me = await client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {first['access_token']}"}
+    )
+    assert first_me.json()["id"] == me.json()["id"]
+
+
+async def test_wrong_code_is_rejected_and_attempts_are_limited(client: AsyncClient):
+    phone = new_phone()
+    await client.post("/v1/auth/phone/code", json={"phone": phone})
+    right = last_sms_code(phone)
+    wrong = "000000" if right != "000000" else "111111"
+    for _ in range(5):
+        response = await client.post(
+            "/v1/auth/phone/verify",
+            json={"phone": phone, "code": wrong, "personal_data_consent": True},
+        )
+        assert response.status_code == 401
+    # After five failures even the right code no longer works.
+    locked = await client.post(
+        "/v1/auth/phone/verify",
+        json={"phone": phone, "code": right, "personal_data_consent": True},
+    )
+    assert locked.status_code == 401
+    assert locked.json()["detail"] == "code expired"
+
+
+async def test_codes_cannot_be_requested_back_to_back(client: AsyncClient, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "phone_code_resend_seconds", 60)
+    phone = new_phone()
+    assert (await client.post("/v1/auth/phone/code", json={"phone": phone})).status_code == 200
+    again = await client.post("/v1/auth/phone/code", json={"phone": phone})
+    assert again.status_code == 429
+    assert int(again.headers["Retry-After"]) > 0
+
+
+async def test_only_russian_mobile_numbers_are_accepted(client: AsyncClient):
+    for phone in ("+1 650 555 0100", "+7 495 123-45-67", "12345"):
+        response = await client.post("/v1/auth/phone/code", json={"phone": phone})
+        assert response.status_code == 422, phone
+
+
+async def test_a_code_works_once(client: AsyncClient):
+    phone = new_phone()
+    await sign_in(client, phone)
+    reused = await client.post(
+        "/v1/auth/phone/verify", json={"phone": phone, "code": last_sms_code(phone)}
+    )
+    assert reused.status_code == 401
 
 
 async def test_refresh_token_round_trip(client: AsyncClient):
-    payload = {"email": "refresh@example.com", "password": "correct-horse-battery"}
-    tokens = (await client.post("/v1/auth/register", json=payload)).json()
+    tokens = await sign_in(client)
     refreshed = await client.post(
         "/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]}
     )
@@ -68,8 +124,7 @@ async def test_refresh_token_round_trip(client: AsyncClient):
 
 
 async def test_access_token_is_not_accepted_as_refresh_token(client: AsyncClient):
-    payload = {"email": "swap-token@example.com", "password": "correct-horse-battery"}
-    tokens = (await client.post("/v1/auth/register", json=payload)).json()
+    tokens = await sign_in(client)
     response = await client.post(
         "/v1/auth/refresh", json={"refresh_token": tokens["access_token"]}
     )
@@ -81,7 +136,7 @@ async def test_protected_endpoint_requires_a_token(client: AsyncClient):
 
 
 async def test_oauth_stub_creates_and_then_matches_an_identity(client: AsyncClient):
-    body = {"id_token": "test:abc123", "email": "vk-user@example.com"}
+    body = {"id_token": "test:abc123", "email": "vk-user@example.com", "personal_data_consent": True}
     first = await client.post("/v1/auth/oauth/vk", json=body)
     assert first.status_code == 200
     second = await client.post("/v1/auth/oauth/vk", json=body)
@@ -241,11 +296,8 @@ async def test_plan_is_scoped_to_its_owner(auth_client: AsyncClient, client: Asy
     plan_id = (await complete_onboarding(auth_client))["plan_id"]
 
     other = AsyncClient(transport=auth_client._transport, base_url="http://test")
-    registration = await other.post(
-        "/v1/auth/register",
-        json={"email": "intruder@example.com", "password": "correct-horse-battery"},
-    )
-    other.headers["Authorization"] = f"Bearer {registration.json()['access_token']}"
+    registration = await sign_in(other)
+    other.headers["Authorization"] = f"Bearer {registration['access_token']}"
     response = await other.get(f"/v1/meal-plans/{plan_id}")
     await other.aclose()
     assert response.status_code == 404
@@ -529,12 +581,26 @@ async def test_deleting_a_diary_entry(auth_client: AsyncClient):
 # --------------------------------------------------------------------------- vision
 
 
+JPEG_HEAD = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+
+
+def jpeg(body: bytes) -> bytes:
+    """A structurally valid JPEG: SOI, JFIF header, start of scan, data, EOI."""
+    return JPEG_HEAD + b"\xff\xda\x00\x02" + body + b"\xff\xd9"
+
+
 def fake_photo(seed: bytes = b"lunch") -> dict:
-    return {"image": ("meal.jpg", io.BytesIO(seed * 200), "image/jpeg")}
+    return {"image": ("meal.jpg", io.BytesIO(jpeg(seed * 200)), "image/jpeg")}
+
+
+async def ready_for_photos(client: AsyncClient) -> None:
+    await complete_onboarding(client)
+    consent = await client.post("/v1/me/consents", json={"document": "photo_recognition"})
+    assert consent.status_code == 201, consent.text
 
 
 async def test_vision_recognition_returns_editable_candidates(auth_client: AsyncClient):
-    await complete_onboarding(auth_client)
+    await ready_for_photos(auth_client)
     response = await auth_client.post("/v1/vision/recognize", files=fake_photo())
     assert response.status_code == 200, response.text
 
@@ -550,7 +616,7 @@ async def test_vision_recognition_returns_editable_candidates(auth_client: Async
 
 
 async def test_vision_rejects_non_images(auth_client: AsyncClient):
-    await complete_onboarding(auth_client)
+    await ready_for_photos(auth_client)
     response = await auth_client.post(
         "/v1/vision/recognize",
         files={"image": ("notes.txt", io.BytesIO(b"hello"), "text/plain")},
@@ -559,18 +625,20 @@ async def test_vision_rejects_non_images(auth_client: AsyncClient):
 
 
 async def test_identical_photo_is_not_charged_twice(auth_client: AsyncClient):
-    await complete_onboarding(auth_client)
+    await ready_for_photos(auth_client)
     first = await auth_client.post("/v1/vision/recognize", files=fake_photo(b"same"))
     second = await auth_client.post("/v1/vision/recognize", files=fake_photo(b"same"))
     assert first.json()["recognition_id"] == second.json()["recognition_id"]
 
 
-async def test_free_tier_photo_quota_is_enforced(auth_client: AsyncClient):
-    await complete_onboarding(auth_client)
-    assert (
-        await auth_client.post("/v1/vision/recognize", files=fake_photo(b"one"))
-    ).status_code == 200
-    blocked = await auth_client.post("/v1/vision/recognize", files=fake_photo(b"two"))
+async def test_trial_photo_quota_is_enforced(auth_client: AsyncClient):
+    await ready_for_photos(auth_client)
+    for index in range(5):
+        response = await auth_client.post(
+            "/v1/vision/recognize", files=fake_photo(f"photo-{index}".encode())
+        )
+        assert response.status_code == 200
+    blocked = await auth_client.post("/v1/vision/recognize", files=fake_photo(b"sixth"))
     assert blocked.status_code == 402
     assert "limit" in blocked.json()["detail"]
 
@@ -578,7 +646,7 @@ async def test_free_tier_photo_quota_is_enforced(auth_client: AsyncClient):
 async def test_confirming_a_recognition_writes_the_diary_and_records_the_edit(
     auth_client: AsyncClient,
 ):
-    await complete_onboarding(auth_client)
+    await ready_for_photos(auth_client)
     recognition = (
         await auth_client.post("/v1/vision/recognize", files=fake_photo(b"confirm"))
     ).json()
@@ -603,36 +671,7 @@ async def test_confirming_a_recognition_writes_the_diary_and_records_the_edit(
 # ------------------------------------------------------------------------ integrations
 
 
-async def test_billing_stub_checkout_webhook_is_idempotent(auth_client: AsyncClient):
-    plans = await auth_client.get("/v1/billing/plans")
-    assert plans.status_code == 200
-    assert {p["tier"] for p in plans.json()} == {"base", "pro"}
-
-    checkout = await auth_client.post("/v1/billing/checkout", json={"tier": "pro"})
-    assert checkout.status_code == 201, checkout.text
-    payment_id = checkout.json()["payment_id"]
-    assert checkout.json()["checkout_url"]
-
-    webhook = {
-        "id": "stub-event-1",
-        "event": "payment.succeeded",
-        "object": {
-            "id": f"stub-{payment_id}",
-            "status": "succeeded",
-            "metadata": {"payment_id": payment_id, "tier": "pro"},
-        },
-    }
-    first = await auth_client.post("/v1/billing/webhooks/stub", json=webhook)
-    second = await auth_client.post("/v1/billing/webhooks/stub", json=webhook)
-    assert first.status_code == 200 and first.json()["processed"] is True
-    assert second.status_code == 200 and second.json()["processed"] is False
-
-    entitlement = (await auth_client.get("/v1/me/entitlements")).json()
-    assert entitlement["tier"] == "pro"
-    assert entitlement["status"] == "active"
-
-
-async def test_free_tier_cannot_use_assistant(auth_client: AsyncClient):
+async def test_trial_cannot_use_assistant(auth_client: AsyncClient):
     await complete_onboarding(auth_client)
     response = await auth_client.post(
         "/v1/assistant/chat", json={"message": "Что съесть после тренировки?"}
@@ -642,20 +681,8 @@ async def test_free_tier_cannot_use_assistant(auth_client: AsyncClient):
 
 async def test_pro_tier_assistant_and_retail_offers(auth_client: AsyncClient):
     result = await complete_onboarding(auth_client)
-    checkout = await auth_client.post("/v1/billing/checkout", json={"tier": "pro"})
-    payment_id = checkout.json()["payment_id"]
-    await auth_client.post(
-        "/v1/billing/webhooks/stub",
-        json={
-            "id": "stub-event-assistant",
-            "event": "payment.succeeded",
-            "object": {
-                "id": f"stub-{payment_id}",
-                "status": "succeeded",
-                "metadata": {"payment_id": payment_id, "tier": "pro"},
-            },
-        },
-    )
+    await pay(auth_client, "pro")
+    await auth_client.post("/v1/me/consents", json={"document": "ai_assistant"})
     chat = await auth_client.post(
         "/v1/assistant/chat", json={"message": "Как распределить белок?"}
     )
@@ -674,3 +701,113 @@ async def test_pro_tier_assistant_and_retail_offers(auth_client: AsyncClient):
     assert offer["price_type"] == "estimate"
     assert offer["retailer"] == "Пятёрочка"
     assert offer["available"] is None
+
+
+async def test_account_deletion_removes_user_and_invalidates_tokens(auth_client: AsyncClient):
+    await complete_onboarding(auth_client)
+    assert (await auth_client.get("/v1/auth/me")).status_code == 200
+
+    deleted = await delete_account(auth_client)
+    assert deleted.status_code == 204
+    assert (await auth_client.get("/v1/auth/me")).status_code == 401
+
+
+async def test_malformed_token_subject_is_401_not_500(client: AsyncClient):
+    from app.core.security import create_access_token, create_refresh_token
+
+    client.headers["Authorization"] = f"Bearer {create_access_token('not-a-uuid', 'not-a-uuid')}"
+    assert (await client.get("/v1/auth/me")).status_code == 401
+    refreshed = await client.post(
+        "/v1/auth/refresh", json={"refresh_token": create_refresh_token("not-a-uuid", "not-a-uuid", "x")}
+    )
+    assert refreshed.status_code == 401
+
+
+async def test_oauth_ignores_client_supplied_email(client: AsyncClient):
+    from app.db.session import SessionLocal
+
+    victim = f"victim-{date.today().isoformat()}-{id(client)}@example.com"
+    victim_token = (await sign_in(client))["access_token"]
+    headers = {"Authorization": f"Bearer {victim_token}"}
+    victim_id = (await client.get("/v1/auth/me", headers=headers)).json()["id"]
+    async with SessionLocal() as session:
+        await session.execute(
+            text("UPDATE users SET email = :email WHERE id = :id"),
+            {"email": victim, "id": victim_id},
+        )
+        await session.commit()
+
+    attacker = await client.post(
+        "/v1/auth/oauth/vk",
+        json={"id_token": "test:attacker", "email": victim, "personal_data_consent": True},
+    )
+    assert attacker.status_code == 200
+    attacker_me = await client.get(
+        "/v1/auth/me", headers={"Authorization": f"Bearer {attacker.json()['access_token']}"}
+    )
+    assert attacker_me.json()["id"] != victim_id
+    assert attacker_me.json()["email"] is None
+
+
+async def test_auth_endpoints_are_rate_limited(client: AsyncClient, monkeypatch):
+    from app.core import rate_limit
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "auth_rate_limit_per_minute", 3)
+    rate_limit.reset()
+    phone = new_phone()
+    statuses = [
+        (await client.post(
+            "/v1/auth/phone/verify", json={"phone": phone, "code": "123456"}
+        )).status_code
+        for _ in range(4)
+    ]
+    rate_limit.reset()
+    assert statuses == [401, 401, 401, 429]
+
+
+async def test_peanut_and_seafood_allergies_exclude_catalogue_dishes(auth_client: AsyncClient):
+    for step, payload in ONBOARDING_STEPS:
+        if step == "restrictions":
+            payload = {**payload, "allergens": ["peanut", "seafood"]}
+        response = await auth_client.patch(f"/v1/onboarding/{step}", json=payload)
+        assert response.status_code == 200, response.text
+    result = (await auth_client.post("/v1/onboarding/complete")).json()
+    plan = (await auth_client.get(f"/v1/meal-plans/{result['plan_id']}")).json()
+    slugs = {item["recipe_slug"] for day in plan["days"] for item in day["items"]}
+    assert "oats_banana_pb" not in slugs
+    assert not {s for s in slugs if s.startswith("shrimp_")}
+
+
+async def test_unknown_allergen_is_rejected(auth_client: AsyncClient):
+    response = await auth_client.patch(
+        "/v1/onboarding/restrictions", json={"diet": "omnivore", "allergens": ["пыльца"]}
+    )
+    assert response.status_code == 422
+
+
+async def test_new_weigh_in_recalculates_targets(auth_client: AsyncClient):
+    await complete_onboarding(auth_client)
+    before = (await auth_client.get("/v1/me/targets")).json()
+    added = await auth_client.post(
+        "/v1/progress/entries", json={"day": date.today().isoformat(), "weight_kg": 60}
+    )
+    assert added.status_code == 201, added.text
+    after = (await auth_client.get("/v1/me/targets")).json()
+    assert after["bmr_kcal"] < before["bmr_kcal"]
+    overview = (await auth_client.get("/v1/progress/overview")).json()
+    assert overview["current_weight_kg"] == 60
+    assert overview["start_weight_kg"] != 60
+
+
+async def test_production_refuses_stub_providers(auth_client: AsyncClient, monkeypatch):
+    from app.core.config import settings
+
+    await ready_for_photos(auth_client)
+    monkeypatch.setattr(settings, "env", "production")
+    photo = await auth_client.post(
+        "/v1/vision/recognize",
+        files={"image": ("meal.jpg", jpeg(b"production-stub"), "image/jpeg")},
+    )
+    assert photo.status_code == 503
+    assert "key" not in photo.text.lower()
