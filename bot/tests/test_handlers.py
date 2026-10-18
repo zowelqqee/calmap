@@ -135,3 +135,50 @@ async def test_group_chats_are_ignored(chat, linked_user):
     before = len(chat.session.calls)
     await chat.send(linked_user, text="/status", chat_type="group")
     assert len(chat.session.calls) == before
+
+
+async def test_preview_mode_without_yookassa_shows_everything_but_paying(env, linked_user):
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from calmap_bot.billing import Billing
+    from calmap_bot.web import build_app
+
+    preview = Billing(
+        env.db, None, env.backend_client, env.billing.notify,
+        tariffs=env.billing.tariffs, return_url="https://t.me/x", send_receipts=True, vat_code=1,
+    )
+    session = RecordingSession()
+    bot = Bot("42:TEST", session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    settings = Settings(
+        _env_file=None, public_base_url="https://api.example.ru",
+        seller_info="ИП Тестов Т. Т., ИНН 000000000000",
+        bot_token="42:TEST", telegram_bot_api_secret="s",
+    )
+    dispatcher = Dispatcher()
+    dispatcher.include_router(build_router(settings, env.db, env.backend_client, preview))
+    assert settings.configured == [] and settings.payments_enabled is False
+
+    def update(**fields) -> Update:
+        return Update(update_id=1, **fields)
+
+    user = User(id=linked_user, is_bot=False, first_name="Т")
+    card = Message(message_id=1, date=datetime.now(timezone.utc),
+                   chat=Chat(id=linked_user, type="private"), from_user=user, text="card")
+    await dispatcher.feed_update(bot, update(callback_query=CallbackQuery(
+        id="1", from_user=user, chat_instance="x", data="offer:base", message=card)))
+    offer = session.texts()[-1]
+    assert "299 ₽" in offer and "Продавец: ИП Тестов" in offer
+    await dispatcher.feed_update(bot, update(callback_query=CallbackQuery(
+        id="2", from_user=user, chat_instance="x", data="pay:base", message=card)))
+    assert any("Оплата подключается" in a for a in session.alerts())
+
+    async with TestClient(TestServer(build_app(preview))) as client:
+        response = await client.post("/yookassa/webhook", json={"event": "payment.succeeded",
+                                                               "object": {"id": "x"}})
+        assert response.status == 503
+
+
+def test_help_names_the_seller():
+    from calmap_bot import texts
+
+    assert "Продавец: ИП Тестов" in texts.help_text("support@calmap.ru", "ИП Тестов")

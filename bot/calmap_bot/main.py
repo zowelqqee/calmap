@@ -57,7 +57,13 @@ async def run() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     backend = CalmapBackend(settings.calmap_api_url, settings.telegram_bot_api_secret)
-    yookassa = YooKassa(settings.yookassa_shop_id, settings.yookassa_secret_key)
+    yookassa = (
+        YooKassa(settings.yookassa_shop_id, settings.yookassa_secret_key)
+        if settings.payments_enabled
+        else None
+    )
+    if yookassa is None:
+        logger.warning("YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY are not set: preview mode, no payments")
 
     async def notify(telegram_user_id: int, text: str, markup=None) -> None:
         await bot.send_message(
@@ -94,11 +100,12 @@ async def run() -> None:
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", settings.web_port).start()
     jobs = [
-        asyncio.create_task(_every(RECONCILE_EVERY, billing.reconcile, "reconcile")),
         asyncio.create_task(
             _every(REMIND_EVERY, lambda: send_reminders(db, backend, notify, billing.tariffs), "reminders")
         ),
     ]
+    if yookassa is not None:
+        jobs.append(asyncio.create_task(_every(RECONCILE_EVERY, billing.reconcile, "reconcile")))
     logger.info("bot started")
     try:
         await dispatcher.start_polling(bot)
@@ -107,7 +114,8 @@ async def run() -> None:
             job.cancel()
         await runner.cleanup()
         await backend.close()
-        await yookassa.close()
+        if yookassa is not None:
+            await yookassa.close()
         await bot.session.close()
         await db.dispose()
 

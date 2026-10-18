@@ -103,6 +103,7 @@ Telegram-бот продаёт подписку BASE и PRO через ЮKassa �
 | `YOOKASSA_RECEIPTS`, `YOOKASSA_VAT_CODE` | чеки 54-ФЗ и код НДС (1 — без НДС) |
 | `PRICE_BASE_RUB`, `PRICE_PRO_RUB`, `SUBSCRIPTION_DAYS` | цены и срок (по умолчанию 299, 499, 30) |
 | `LEGAL_CONTACT_EMAIL` | контакт поддержки в `/help` |
+| `SELLER_INFO` | продавец в условиях оплаты и в помощи: «ИП …, ИНН …, ОГРНИП …» (по умолчанию `LEGAL_OPERATOR_NAME`) |
 | `TELEGRAM_PROXY_URL` | `socks5://egress:1080` — Telegram через SSH-туннель за рубеж (`docker-compose.egress.yml`); пусто — напрямую |
 | `PUBLIC_BASE_URL` | `https://`-домен для ссылок на соглашение и политику (обязателен) |
 
@@ -112,6 +113,12 @@ Telegram-бот продаёт подписку BASE и PRO через ЮKassa �
 адресов ЮKassa (`YOOKASSA_ALLOWED_IPS`), бот дополнительно проверяет формат id.
 
 Запуск — вместе с backend-ом: `docker compose --profile https up -d --build`.
+
+## Режим предпросмотра
+
+Без `YOOKASSA_SHOP_ID` и `YOOKASSA_SECRET_KEY` бот запускается без оплаты: привязка,
+карточка подписки, тарифы, условия, соглашение и продавец работают, кнопка оплаты
+отвечает «Оплата подключается». Нужен для скриншотов при модерации ЮKassa.
 
 ## Разработка
 

@@ -41,6 +41,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("PUBLIC_BASE_URL", "RECIPE_IMAGE_PUBLIC_BASE_URL"),
     )
     support_contact: str = Field(default="", validation_alias="LEGAL_CONTACT_EMAIL")
+    #: Seller shown with prices and in help: «ИП Фамилия И. О., ИНН …, ОГРНИП …».
+    seller_info: str = Field(
+        default="", validation_alias=AliasChoices("SELLER_INFO", "LEGAL_OPERATOR_NAME")
+    )
 
     #: Proxy for Telegram traffic, e.g. socks5://egress:1080 (the SSH tunnel abroad).
     #: Empty: direct. YooKassa and the backend are always reached directly.
@@ -55,12 +59,16 @@ class Settings(BaseSettings):
         required = {
             "BOT_TOKEN": self.bot_token,
             "TELEGRAM_BOT_API_SECRET": self.telegram_bot_api_secret,
-            "YOOKASSA_SHOP_ID": self.yookassa_shop_id,
-            "YOOKASSA_SECRET_KEY": self.yookassa_secret_key,
             # Links to the terms and the privacy policy must be valid.
             "PUBLIC_BASE_URL": self.public_base_url.startswith("https://"),
         }
         return [name for name, value in required.items() if not value]
+
+    @property
+    def payments_enabled(self) -> bool:
+        """Without YooKassa keys the bot runs in preview: everything but paying
+        (needed for YooKassa's own moderation, which asks for bot screenshots)."""
+        return bool(self.yookassa_shop_id and self.yookassa_secret_key)
 
 
 @lru_cache

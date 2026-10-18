@@ -75,7 +75,7 @@ class Billing:
     def __init__(
         self,
         db: Database,
-        yookassa: YooKassa,
+        yookassa: YooKassa | None,
         backend: CalmapBackend,
         notify: Notify,
         *,
@@ -102,6 +102,8 @@ class Billing:
     async def start_checkout(self, telegram_user_id: int, tier: str) -> str:
         """Create a YooKassa payment (or reuse a fresh pending one for the same
         tier) and return its confirmation URL."""
+        if self.yookassa is None:
+            raise CheckoutRefused("payments disabled")
         tariff = self.tariffs[tier]
         now = datetime.now(timezone.utc)
         async with self.db.session() as session:
@@ -196,7 +198,7 @@ class Billing:
                     .limit(5)
                 )
             ).all()
-        if not recent:
+        if not recent or self.yookassa is None:
             return "none"
         for payment in recent:
             if payment.status == PaymentStatus.PENDING or (

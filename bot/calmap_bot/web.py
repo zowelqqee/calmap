@@ -22,6 +22,8 @@ def build_app(billing: Billing) -> web.Application:
         return web.json_response({"status": "ok"})
 
     async def yookassa_webhook(request: web.Request) -> web.Response:
+        if billing.yookassa is None:
+            return web.json_response({"error": "payments are not configured"}, status=503)
         try:
             body = await request.json()
             event = str(body.get("event", ""))

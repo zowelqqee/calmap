@@ -169,7 +169,7 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
         except BackendError:
             await refuse(target, texts.SERVICE_UNAVAILABLE)
             return
-        text = texts.confirm(tariff, state, new_until, terms_url)
+        text = texts.confirm(tariff, state, new_until, terms_url, settings.seller_info)
         if isinstance(target, CallbackQuery) and _from_reminder(target):
             # From a reminder: keep the reminder, open the offer below it.
             await target.message.answer(
@@ -249,7 +249,7 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
     @router.message(Command("help"))
     @router.message(F.text == texts.MENU_HELP)
     async def help_(message: Message) -> None:
-        await message.answer(texts.help_text(settings.support_contact))
+        await message.answer(texts.help_text(settings.support_contact, settings.seller_info))
 
     @router.message(Command("reminders_off"))
     async def reminders_off(message: Message) -> None:
@@ -282,7 +282,7 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
 
     @router.callback_query(F.data == "help")
     async def help_cb(callback: CallbackQuery) -> None:
-        await show(callback, texts.help_text(settings.support_contact), keyboards.back_home())
+        await show(callback, texts.help_text(settings.support_contact, settings.seller_info), keyboards.back_home())
 
     @router.callback_query(F.data.in_({"reminders:on", "reminders:off"}))
     async def reminders_cb(callback: CallbackQuery) -> None:
@@ -317,6 +317,8 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
                 message = texts.TOO_MANY_CHECKOUTS
             elif "not linked" in reason:
                 message = texts.NEED_LINK
+            elif "disabled" in reason:
+                message = texts.PAYMENTS_SOON
             else:
                 message = texts.SERVICE_UNAVAILABLE
             await refuse(callback, message)

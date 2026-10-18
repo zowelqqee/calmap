@@ -214,6 +214,7 @@ def confirm(
     state: SubscriptionState,
     new_until: datetime,
     terms_url: str,
+    seller: str = "",
 ) -> str:
     lines = [
         f"<b>Calmap {tariff.title}</b> на {days_word(tariff.days)} — <b>{tariff.price_rub} ₽</b>",
@@ -234,6 +235,8 @@ def confirm(
         "Разовая оплата картой или через СБП. Без автопродления и скрытых списаний.",
         f"Оплачивая, вы принимаете {link(terms_url, 'Пользовательское соглашение')}.",
     ]
+    if seller:
+        lines.append(f"Продавец: {escape(seller)}.")
     return "\n".join(lines)
 
 
@@ -258,6 +261,10 @@ PAYMENT_PENDING = "Оплата ещё не поступила. Если вы у
 PAYMENT_CANCELED = "Платёж отменён. Можно создать новый счёт в «💳 Продлить»."
 PAYMENT_NOT_FOUND = "Неоплаченных счетов нет. Создайте новый в «💳 Продлить»."
 CHECK_TOO_OFTEN = "Секунду, уже проверяем…"
+PAYMENTS_SOON = (
+    "Оплата подключается и скоро будет доступна прямо здесь. Пробный период в "
+    "приложении уже работает."
+)
 ALREADY_PAID_FAR_AHEAD = "Подписка уже оплачена больше чем на год вперёд 🙂"
 TOO_MANY_CHECKOUTS = "Слишком много счетов за последний час. Попробуйте позже."
 
@@ -324,8 +331,10 @@ def reminder(
 # --------------------------------------------------------------------- help
 
 
-def help_text(support: str) -> str:
+def help_text(support: str, seller: str = "") -> str:
     contact = f"\n\n💬 Поддержка: {escape(support)}" if support else ""
+    if seller:
+        contact += f"\nПродавец: {escape(seller)}"
     return (
         "<b>Частые вопросы</b>\n\n"
         "<b>Когда откроется доступ?</b>\nСразу после оплаты, обычно в течение минуты. "
