@@ -208,7 +208,8 @@ class _ProfileScreenState extends State<ProfileScreen>
       if (deleted == true) await widget.onLogout();
       return;
     }
-    // No phone number (VK ID): a sign-in made in the last minutes confirms.
+    // No phone number (VK ID) or no SMS: a sign-in made in the last minutes
+    // confirms.
     try {
       await widget.api.deleteAccount();
       await widget.onLogout();
@@ -223,8 +224,8 @@ class _ProfileScreenState extends State<ProfileScreen>
         builder: (context) => AlertDialog(
           title: const Text('Подтвердите вход'),
           content: const Text(
-            'Для удаления аккаунта войдите заново через VK ID и сразу повторите '
-            'удаление в профиле.',
+            'Для удаления аккаунта войдите заново (новым кодом или через VK ID) '
+            'и сразу повторите удаление в профиле.',
           ),
           actions: [
             TextButton(

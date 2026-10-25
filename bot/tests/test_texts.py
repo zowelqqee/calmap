@@ -92,3 +92,12 @@ def test_reminder_buttons():
     ended = keyboards.reminder("ended", "pro", False, TARIFFS)
     assert callbacks(ended) == ["offer:pro"]
     assert "закончилась" in texts.reminder("ended", "pro", False, NOW)
+
+
+def test_login_texts():
+    from calmap_bot import texts
+
+    assert texts.masked_phone("79991234567") == "+7 999 ***-**-67"
+    assert "5 минут" in texts.login_code("000111", "79991234567", 300)
+    assert "2 минуты" in texts.login_too_often(150)
+    assert "1 секунду" in texts.login_too_often(1)

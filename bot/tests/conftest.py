@@ -98,6 +98,8 @@ class FakeBackend:
         self.subs: dict[int, dict] = {}
         self.events: dict[str, dict] = {}
         self.fail_events = False
+        self.login_codes: list[dict] = []
+        self.login_retry_after = 0
 
     def add_account(self, phone: str, telegram_user_id: int, **sub) -> uuid.UUID:
         self.phones[phone] = telegram_user_id
@@ -119,6 +121,18 @@ class FakeBackend:
             return httpx.Response(
                 200,
                 json={"user_id": str(self.accounts[telegram_user_id]), "subscription": self.subs[telegram_user_id]},
+            )
+        if path == "/v1/bot/login-code":
+            body = json.loads(request.content)
+            self.login_codes.append(body)
+            if self.login_retry_after:
+                return httpx.Response(
+                    429, headers={"Retry-After": str(self.login_retry_after)}, json={}
+                )
+            return httpx.Response(
+                200,
+                json={"code": "123456", "expires_in": 300,
+                      "account_exists": body["phone"] in self.phones},
             )
         if path.startswith("/v1/bot/link/") and request.method == "DELETE":
             self.unlinked = int(path.rsplit("/", 1)[1])

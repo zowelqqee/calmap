@@ -67,8 +67,8 @@ class AuthSession(Base, UUIDPrimaryKey, Timestamped):
 
 
 class PhoneCode(Base, UUIDPrimaryKey, Timestamped):
-    """One SMS code: sign-in or confirmation of account deletion. Only an HMAC of
-    the code is stored."""
+    """One sign-in or account-deletion code, sent by SMS or handed to the Telegram
+    bot. Only an HMAC of the code is stored."""
 
     __tablename__ = "phone_codes"
 
@@ -76,6 +76,10 @@ class PhoneCode(Base, UUIDPrimaryKey, Timestamped):
     #: sign_in | delete_account — a code works only for what it was sent for.
     purpose: Mapped[str] = mapped_column(
         String(16), default="sign_in", server_default="sign_in", nullable=False
+    )
+    #: sms | telegram — how the code was delivered; the SMS budget counts sms only.
+    channel: Mapped[str] = mapped_column(
+        String(16), default="sms", server_default="sms", nullable=False
     )
     code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

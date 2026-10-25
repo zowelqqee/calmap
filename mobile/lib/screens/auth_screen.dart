@@ -2,14 +2,17 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/api_client.dart';
 import '../core/legal.dart';
 import '../core/oauth_service.dart';
 import '../core/theme.dart';
 
-/// Sign-in by a Russian mobile number and an SMS code (the first sign-in creates
-/// the account). VK ID is shown as "available later" until it is enabled.
+/// Sign-in by a Russian mobile number and a one-time code (the first sign-in
+/// creates the account). The code comes from the Calmap Telegram bot and/or by
+/// SMS, whichever the server offers. VK ID is shown as "available later" until
+/// it is enabled.
 class AuthScreen extends StatefulWidget {
   const AuthScreen({
     required this.api,
@@ -31,7 +34,14 @@ class _AuthScreenState extends State<AuthScreen> {
 
   /// The number the code was sent to (normalised digits, 7XXXXXXXXXX).
   String? sentTo;
+
+  /// How the current code is delivered: "telegram" or "sms".
+  String via = 'sms';
   bool loading = false;
+
+  /// Delivery channels the server offers; SMS until it answers.
+  bool smsAvailable = true;
+  String? telegramUrl;
 
   /// Shown once the server says this sign-in creates a new account.
   bool consentNeeded = false;
@@ -39,6 +49,25 @@ class _AuthScreenState extends State<AuthScreen> {
   int resendIn = 0;
   Timer? _resendTimer;
   String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadChannels();
+  }
+
+  Future<void> _loadChannels() async {
+    try {
+      final channels = await widget.api.get('/v1/auth/phone/channels');
+      if (!mounted) return;
+      setState(() {
+        smsAvailable = channels['sms'] == true;
+        telegramUrl = channels['telegram_url'] as String?;
+      });
+    } on Exception {
+      // Older server or no network: keep the SMS flow.
+    }
+  }
 
   @override
   void dispose() {
@@ -70,6 +99,43 @@ class _AuthScreenState extends State<AuthScreen> {
     });
   }
 
+  /// Opens the bot; it asks for the contact and sends the code for that number.
+  Future<void> _requestTelegramCode() async {
+    final url = telegramUrl;
+    final digits = _phoneDigits;
+    if (url == null) return;
+    if (digits == null) {
+      setState(() => error = 'Введите российский мобильный номер');
+      return;
+    }
+    setState(() {
+      sentTo = '7$digits';
+      via = 'telegram';
+      error = null;
+      code.clear();
+    });
+    await _openTelegram(url);
+  }
+
+  Future<void> _openTelegram(String url) async {
+    var opened = false;
+    try {
+      opened = await launchUrl(
+        Uri.parse(url),
+        mode: LaunchMode.externalApplication,
+      );
+    } on PlatformException {
+      opened = false;
+    }
+    if (!opened && mounted) {
+      setState(
+        () => error =
+            'Не удалось открыть Telegram. Установите его и '
+            'повторите.',
+      );
+    }
+  }
+
   Future<void> _requestCode() async {
     final digits = _phoneDigits;
     if (digits == null) {
@@ -87,6 +153,7 @@ class _AuthScreenState extends State<AuthScreen> {
       if (!mounted) return;
       setState(() {
         sentTo = '7$digits';
+        via = 'sms';
         code.clear();
       });
       _startResendTimer((sent['resend_in'] as num?)?.toInt() ?? 60);
@@ -180,9 +247,28 @@ class _AuthScreenState extends State<AuthScreen> {
         '${n.substring(7, 9)}-${n.substring(9)}';
   }
 
+  String get _intro {
+    if (telegramUrl != null && smsAvailable) {
+      return 'Укажите номер телефона — пришлём код в Telegram или SMS. '
+          'Аккаунт создастся автоматически.';
+    }
+    if (telegramUrl != null) {
+      return 'Укажите номер телефона — код пришлёт бот Calmap в Telegram. '
+          'Аккаунт создастся автоматически.';
+    }
+    return 'Укажите номер телефона — пришлём код в SMS. '
+        'Аккаунт создастся автоматически.';
+  }
+
   @override
   Widget build(BuildContext context) {
     final codeStep = sentTo != null;
+    final telegram = telegramUrl;
+    final viaTelegram = via == 'telegram';
+    // The phone step's main button: Telegram when the bot is on, SMS otherwise.
+    final VoidCallback? requestPrimary = telegram != null
+        ? _requestTelegramCode
+        : (smsAvailable ? _requestCode : null);
     return Scaffold(
       body: SafeArea(
         child: ListView(
@@ -219,9 +305,11 @@ class _AuthScreenState extends State<AuthScreen> {
             const SizedBox(height: 10),
             Text(
               codeStep
-                  ? 'Отправили SMS на $_sentToLabel'
-                  : 'Укажите номер телефона — пришлём код в SMS. '
-                        'Аккаунт создастся автоматически.',
+                  ? (viaTelegram
+                        ? 'В боте Calmap нажмите «Поделиться номером» — он '
+                              'пришлёт код для $_sentToLabel'
+                        : 'Отправили SMS на $_sentToLabel')
+                  : _intro,
               textAlign: TextAlign.center,
               style: Theme.of(
                 context,
@@ -273,14 +361,20 @@ class _AuthScreenState extends State<AuthScreen> {
                           }),
                     child: const Text('Изменить номер'),
                   ),
-                  TextButton(
-                    onPressed: loading || resendIn > 0 ? null : _requestCode,
-                    child: Text(
-                      resendIn > 0
-                          ? 'Новый код через $resendIn с'
-                          : 'Отправить снова',
+                  if (viaTelegram && telegram != null)
+                    TextButton(
+                      onPressed: loading ? null : () => _openTelegram(telegram),
+                      child: const Text('Открыть Telegram'),
+                    )
+                  else
+                    TextButton(
+                      onPressed: loading || resendIn > 0 ? null : _requestCode,
+                      child: Text(
+                        resendIn > 0
+                            ? 'Новый код через $resendIn с'
+                            : 'Отправить снова',
+                      ),
                     ),
-                  ),
                 ],
               ),
             ],
@@ -318,14 +412,27 @@ class _AuthScreenState extends State<AuthScreen> {
             ],
             const SizedBox(height: 20),
             FilledButton(
-              onPressed: loading ? null : (codeStep ? _verify : _requestCode),
+              onPressed: loading ? null : (codeStep ? _verify : requestPrimary),
               child: loading
                   ? const SizedBox.square(
                       dimension: 22,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : Text(codeStep ? 'Войти' : 'Получить код'),
+                  : Text(
+                      codeStep
+                          ? 'Войти'
+                          : (telegram != null
+                                ? 'Получить код в Telegram'
+                                : 'Получить код'),
+                    ),
             ),
+            if (!codeStep && telegram != null && smsAvailable) ...[
+              const SizedBox(height: 10),
+              OutlinedButton(
+                onPressed: loading ? null : _requestCode,
+                child: const Text('Получить код по SMS'),
+              ),
+            ],
             if (!codeStep) ...[
               const SizedBox(height: 14),
               const Row(

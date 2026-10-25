@@ -1,6 +1,7 @@
 """Buttons. Callback data is short and self-describing:
 
-home · tariffs · help · offer:<tier> · pay:<tier> · check · reminders:on|off
+home · tariffs · help · offer:<tier> · pay:<tier> · check · reminders:on|off ·
+login:other
 """
 
 from __future__ import annotations
@@ -85,6 +86,12 @@ def invoice(url: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=texts.GO_TO_PAYMENT, url=url)],
             [_button(texts.CHECK_PAYMENT, "check")],
         ]
+    )
+
+
+def login_other_phone() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[_button(texts.LOGIN_OTHER_PHONE_BUTTON, "login:other")]]
     )
 
 

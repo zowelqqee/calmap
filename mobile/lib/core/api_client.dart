@@ -87,6 +87,7 @@ String humanizeApiError(int statusCode, dynamic detail) {
         'Слишком много кодов на этот номер. Попробуйте через час',
     'sms limit reached': 'Отправка SMS временно недоступна. Попробуйте позже',
     'sms delivery failed': 'Не удалось отправить SMS. Попробуйте позже',
+    'sms is not available': 'Вход по SMS пока недоступен',
     'personal data consent is required':
         'Для регистрации нужно согласие на обработку персональных данных',
     'too many codes from this network':

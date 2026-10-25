@@ -86,6 +86,7 @@ async def run() -> None:
         [
             BotCommand(command="status", description="📅 Моя подписка"),
             BotCommand(command="pay", description="💳 Продлить или оформить"),
+            BotCommand(command="code", description="🔑 Код для входа в приложение"),
             BotCommand(command="help", description="❓ Помощь и вопросы"),
         ]
     )

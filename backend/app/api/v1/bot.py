@@ -2,7 +2,8 @@
 
 The bot authenticates with the shared secret in `X-Bot-Secret`. It links a Telegram
 account to the app account with the same phone number (shared via Telegram's
-contact button), then pushes every payment status change here. These endpoints are the only way payment
+contact button), then pushes every payment status change here. It also hands out
+sign-in codes to users who shared their own contact (`/login-code`). These endpoints are the only way payment
 status enters the database.
 """
 
@@ -19,11 +20,13 @@ from sqlalchemy import delete, select
 from app.api.deps import DbSession
 from app.api.v1.subscription import subscription_out
 from app.core.config import settings
-from app.db.models import PaymentStatus, Subscription, TelegramLink
+from app.db.models import PaymentStatus, Subscription, TelegramLink, User
 from app.schemas.subscription import (
     BotEventOut,
     BotLinkOut,
     BotLinkRequest,
+    BotLoginCodeOut,
+    BotLoginCodeRequest,
     BotSubscriptionEvent,
     ExpiringOut,
     SubscriptionOut,
@@ -35,7 +38,7 @@ from app.services.subscription import (
     load_subscription,
     user_for_telegram,
 )
-from app.services.phone_auth import normalize_phone
+from app.services.phone_auth import PhoneAuthError, issue_code, normalize_phone
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +69,29 @@ async def link(payload: BotLinkRequest, session: DbSession) -> BotLinkOut:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no account with this phone")
     subscription = await load_subscription(session, user)
     return BotLinkOut(user_id=user.id, subscription=await subscription_out(session, subscription))
+
+
+@router.post("/login-code", response_model=BotLoginCodeOut)
+async def login_code(payload: BotLoginCodeRequest, session: DbSession) -> BotLoginCodeOut:
+    """A sign-in code for the number the user shared in the bot; the bot sends it to
+    them. Same lifetime, attempts and per-number limits as an SMS code."""
+    phone = normalize_phone(payload.phone)
+    if phone is None:
+        raise HTTPException(422, "phone must be a Russian mobile number")
+    try:
+        issued = await issue_code(
+            session,
+            phone,
+            None,
+            channel="telegram",
+            network=f"tg:{payload.telegram_user_id}",
+        )
+    except PhoneAuthError as exc:
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+        raise HTTPException(exc.status, str(exc), headers=headers) from None
+    exists = await session.scalar(select(User.id).where(User.phone == phone)) is not None
+    await session.commit()
+    return BotLoginCodeOut(code=issued.code, expires_in=issued.expires_in, account_exists=exists)
 
 
 @router.post("/subscription/events", response_model=BotEventOut)

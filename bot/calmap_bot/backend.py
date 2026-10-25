@@ -21,6 +21,22 @@ class LinkChanged(LookupError):
     """The Telegram account is now linked to another Calmap account."""
 
 
+class RateLimited(RuntimeError):
+    """Too many sign-in codes for this number; `retry_after` is in seconds."""
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__(f"retry after {retry_after}s")
+        self.retry_after = retry_after
+
+
+@dataclass(frozen=True, slots=True)
+class LoginCode:
+    code: str
+    expires_in: int
+    #: False: signing in with the code creates the Calmap account.
+    account_exists: bool
+
+
 @dataclass(frozen=True, slots=True)
 class Linked:
     user_id: uuid.UUID
@@ -78,6 +94,12 @@ class CalmapBackend:
             raise NotLinked(response.text)
         if response.status_code == 409:
             raise LinkChanged(response.text)
+        if response.status_code == 429:
+            try:
+                retry_after = int(response.headers.get("Retry-After", "60"))
+            except ValueError:
+                retry_after = 60
+            raise RateLimited(retry_after)
         if response.status_code >= 400:
             raise BackendError(f"backend answered {response.status_code}: {response.text[:200]}")
         return response.json()
@@ -89,6 +111,14 @@ class CalmapBackend:
             json={"phone": phone, "telegram_user_id": telegram_user_id, "telegram_username": username},
         )
         return Linked(uuid.UUID(body["user_id"]), SubscriptionState.from_json(body["subscription"]))
+
+    async def login_code(self, phone: str, telegram_user_id: int) -> LoginCode:
+        body = await self._request(
+            "POST",
+            "/v1/bot/login-code",
+            json={"phone": phone, "telegram_user_id": telegram_user_id},
+        )
+        return LoginCode(body["code"], int(body["expires_in"]), bool(body["account_exists"]))
 
     async def unlink(self, telegram_user_id: int) -> None:
         try:

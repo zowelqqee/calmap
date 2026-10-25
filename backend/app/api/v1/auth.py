@@ -29,6 +29,7 @@ from app.schemas.auth import (
     AccountDeletionRequest,
     DeletionCodeOut,
     OAuthRequest,
+    PhoneChannelsOut,
     PhoneCodeOut,
     PhoneCodeRequest,
     PhoneVerifyRequest,
@@ -68,11 +69,19 @@ RECENT_SIGN_IN_MINUTES = 10
 
 
 
+@router.get("/phone/channels", response_model=PhoneChannelsOut)
+async def phone_channels() -> PhoneChannelsOut:
+    """How the app can get a sign-in code: by SMS and/or from the Telegram bot."""
+    return PhoneChannelsOut(sms=settings.sms_enabled, telegram_url=settings.telegram_login_url)
+
+
 @router.post("/phone/code", response_model=PhoneCodeOut, dependencies=rate_limited)
 async def send_phone_code(
     payload: PhoneCodeRequest, request: Request, session: DbSession
 ) -> PhoneCodeOut:
     """Send a sign-in code by SMS to a Russian mobile number."""
+    if not settings.sms_enabled:
+        raise HTTPException(503, "sms is not available")
     phone = normalize_phone(payload.phone)
     if phone is None:
         raise HTTPException(422, "phone must be a Russian mobile number")
@@ -94,7 +103,7 @@ async def send_phone_code(
 async def verify_phone_code(
     payload: PhoneVerifyRequest, request: Request, session: DbSession
 ) -> TokenPair:
-    """Exchange the SMS code for tokens. The first sign-in creates the account and
+    """Exchange the code (SMS or Telegram bot) for tokens. The first sign-in creates the account and
     needs the separate personal-data consent; the code is not spent until then."""
     phone = normalize_phone(payload.phone)
     if phone is None:
@@ -237,8 +246,10 @@ async def send_deletion_code(
     user: CurrentUser, request: Request, session: DbSession
 ) -> DeletionCodeOut:
     """Step 1 of account deletion: an SMS code to the account's phone number, so a
-    stolen session alone cannot destroy the account."""
-    if not user.phone:
+    stolen session alone cannot destroy the account. Without SMS delivery (or a
+    phone number) a sign-in made in the last minutes confirms instead: signing in
+    again needs a fresh code from the bot."""
+    if not user.phone or not settings.sms_enabled:
         return DeletionCodeOut(method="recent_sign_in")
     ip = request.client.host if request.client else None
     try:
@@ -267,8 +278,9 @@ async def delete_me(
 ) -> Response:
     """Step 2: permanently delete the account and every record that belongs to it.
 
-    Needs the SMS code from step 1; an account without a phone number (VK ID) needs
-    a session started in the last RECENT_SIGN_IN_MINUTES minutes instead. Refusals
+    Needs the SMS code from step 1; an account without a phone number (VK ID), or
+    any account while SMS is off, needs a session started in the last
+    RECENT_SIGN_IN_MINUTES minutes instead. Refusals
     answer 403, never 401: a wrong code must not look like an expired session.
 
     Required by the App Store and Google Play and by 152-FZ (withdrawal of consent).
@@ -276,7 +288,7 @@ async def delete_me(
     removes the profile, diary, plans, progress, recognitions, chats and payments.
     Outstanding tokens stop working because their subject no longer exists.
     """
-    if user.phone:
+    if user.phone and settings.sms_enabled:
         code = payload.code if payload else None
         if code is None:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "confirmation code required")

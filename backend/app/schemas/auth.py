@@ -16,6 +16,12 @@ class PhoneCodeOut(BaseModel):
     resend_in: int
 
 
+class PhoneChannelsOut(BaseModel):
+    sms: bool
+    #: Deep link to the bot that gives sign-in codes; null when the bot is off.
+    telegram_url: str | None = None
+
+
 class PhoneVerifyRequest(BaseModel):
     phone: str = Field(min_length=10, max_length=20)
     code: str = Field(pattern=r"^\d{6}$")
@@ -26,8 +32,8 @@ class PhoneVerifyRequest(BaseModel):
 
 class DeletionCodeOut(BaseModel):
     """`method`: "sms" — a code was sent to `phone_masked`; "recent_sign_in" — the
-    account has no phone number, so deletion needs a sign-in made in the last
-    few minutes instead."""
+    account has no phone number or SMS is off, so deletion needs a sign-in made
+    in the last few minutes instead."""
 
     method: Literal["sms", "recent_sign_in"]
     phone_masked: str | None = None

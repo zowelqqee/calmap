@@ -25,7 +25,7 @@ from app.db.models import UserConsent
 
 #: Document → (current version, public page under /legal/).
 CONSENT_DOCUMENTS: dict[str, tuple[str, str]] = {
-    "personal_data": ("2026-10-14", "consent"),
+    "personal_data": ("2026-10-25", "consent"),
     "health_data": ("2026-10-14", "health-consent"),
     "ai_assistant": ("2026-10-14", "ai-consent"),
     "photo_recognition": ("2026-10-15", "photo-consent"),

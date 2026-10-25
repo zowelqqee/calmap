@@ -4,6 +4,10 @@ Flow: share phone → subscription card → (renew | choose tariff) → confirma
 with the exact new end date → invoice → payment page → confirmation message.
 Navigation inside one card edits that message, so the chat stays short; the
 menu under the input field (Моя подписка · Продлить · Помощь) is always there.
+
+Sign-in codes: the app opens t.me/<bot>?start=login (or the user sends /code);
+the user shares their own contact and gets a code for that number. Those
+messages carry no prices: the app sends people here to sign in, not to pay.
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, ReplyKey
 from sqlalchemy import delete
 
 from calmap_bot import keyboards, texts
-from calmap_bot.backend import BackendError, CalmapBackend, NotLinked
+from calmap_bot.backend import BackendError, CalmapBackend, Linked, NotLinked, RateLimited
 from calmap_bot.billing import Billing, CheckoutRefused
 from calmap_bot.config import Settings
 from calmap_bot.db import BotUser, Database, Reminder
@@ -30,6 +34,11 @@ logger = logging.getLogger(__name__)
 
 #: Minimum pause between two "I have paid" checks of one user (YooKassa calls).
 CHECK_INTERVAL = 3.0
+#: How long a "send me a sign-in code" request waits for the contact.
+LOGIN_REQUEST_TTL = 600.0
+#: How long a number that got a code for a not-yet-created account is kept, to
+#: link the account by itself once the user has signed in.
+PENDING_LINK_TTL = 86400.0
 
 
 def normalize_phone(raw: str) -> str | None:
@@ -56,12 +65,48 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
     terms_url = f"{base}/legal/terms"
     privacy_url = f"{base}/legal/privacy"
     last_check: dict[int, float] = {}
+    #: Telegram user → when they asked for a sign-in code and owe us a contact.
+    login_requests: dict[int, float] = {}
+    #: Telegram user → (phone, username, when) after a code for a new account.
+    pending_links: dict[int, tuple[str, str | None, float]] = {}
 
     # ------------------------------------------------------------ helpers
 
+    async def store_link(
+        telegram_user_id: int, phone: str, username: str | None
+    ) -> tuple[Linked, BotUser]:
+        """Link through the backend and remember the number. Raises NotLinked."""
+        linked = await backend.link(phone, telegram_user_id, username)
+        async with db.session() as session:
+            existing = await session.get(BotUser, telegram_user_id)
+            user = await session.merge(
+                BotUser(
+                    telegram_user_id=telegram_user_id,
+                    phone=phone,
+                    calmap_user_id=linked.user_id,
+                    reminders_enabled=existing.reminders_enabled if existing else True,
+                )
+            )
+        pending_links.pop(telegram_user_id, None)
+        return linked, user
+
     async def bot_user(telegram_user_id: int) -> BotUser | None:
         async with db.session() as session:
-            return await session.get(BotUser, telegram_user_id)
+            user = await session.get(BotUser, telegram_user_id)
+        if user is not None:
+            return user
+        pending = pending_links.get(telegram_user_id)
+        if pending is None:
+            return None
+        phone, username, since = pending
+        if time.monotonic() - since > PENDING_LINK_TTL:
+            pending_links.pop(telegram_user_id, None)
+            return None
+        # They got a sign-in code for a new account: link it once it exists.
+        try:
+            return (await store_link(telegram_user_id, phone, username))[1]
+        except (NotLinked, BackendError):
+            return None
 
     async def forget(telegram_user_id: int) -> None:
         async with db.session() as session:
@@ -187,6 +232,52 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
             return
         await show(target, text, keyboards.confirm(tariff))
 
+    # ------------------------------------------------------- sign-in codes
+
+    async def ask_login_contact(message: Message, telegram_user_id: int) -> None:
+        login_requests[telegram_user_id] = time.monotonic()
+        await message.answer(texts.LOGIN_SHARE_PHONE, reply_markup=keyboards.share_phone())
+
+    async def send_login_code(message: Message, telegram_user_id: int, phone: str) -> None:
+        try:
+            issued = await backend.login_code(phone, telegram_user_id)
+        except RateLimited as exc:
+            await message.answer(texts.login_too_often(exc.retry_after))
+            return
+        except BackendError:
+            await message.answer(texts.SERVICE_UNAVAILABLE)
+            return
+        user = await bot_user(telegram_user_id)
+        if user is None and issued.account_exists:
+            # The number is confirmed by the contact: link the account right away.
+            try:
+                user = (await store_link(telegram_user_id, phone, message.from_user.username))[1]
+            except (NotLinked, BackendError):
+                pass
+        elif user is None:
+            # The first sign-in creates the account; link it when it exists.
+            pending_links[telegram_user_id] = (phone, message.from_user.username, time.monotonic())
+        # A linked user already has the menu under the input field.
+        await message.answer(
+            texts.login_code(issued.code, phone, issued.expires_in),
+            reply_markup=keyboards.login_other_phone() if user else ReplyKeyboardRemove(),
+        )
+
+    @router.message(CommandStart(deep_link=True, magic=F.args == "login"))
+    @router.message(Command("code"))
+    async def login(message: Message) -> None:
+        user = await bot_user(message.from_user.id)
+        if user is None:
+            await ask_login_contact(message, message.from_user.id)
+            return
+        # The number was confirmed by a shared contact when the account was linked.
+        await send_login_code(message, message.from_user.id, user.phone)
+
+    @router.callback_query(F.data == "login:other")
+    async def login_other(callback: CallbackQuery) -> None:
+        await callback.answer()
+        await ask_login_contact(callback.message, callback.from_user.id)
+
     # ------------------------------------------------------------ linking
 
     @router.message(CommandStart())
@@ -215,29 +306,25 @@ def build_router(settings: Settings, db: Database, backend: CalmapBackend, billi
             await message.answer(texts.NOT_YOUR_CONTACT, reply_markup=keyboards.share_phone())
             return
         phone = normalize_phone(message.contact.phone_number)
+        asked_at = login_requests.pop(message.from_user.id, None)
+        if asked_at is not None and time.monotonic() - asked_at <= LOGIN_REQUEST_TTL:
+            if phone is None:
+                await message.answer(texts.LOGIN_RUSSIAN_ONLY, reply_markup=ReplyKeyboardRemove())
+                return
+            await send_login_code(message, message.from_user.id, phone)
+            return
         if phone is None:
             await message.answer(texts.ACCOUNT_NOT_FOUND, reply_markup=keyboards.share_phone())
             return
         try:
-            linked = await backend.link(phone, message.from_user.id, message.from_user.username)
+            linked, user = await store_link(message.from_user.id, phone, message.from_user.username)
         except NotLinked:
             await message.answer(texts.ACCOUNT_NOT_FOUND, reply_markup=keyboards.share_phone())
             return
         except BackendError:
             await message.answer(texts.SERVICE_UNAVAILABLE)
             return
-        async with db.session() as session:
-            existing = await session.get(BotUser, message.from_user.id)
-            await session.merge(
-                BotUser(
-                    telegram_user_id=message.from_user.id,
-                    phone=phone,
-                    calmap_user_id=linked.user_id,
-                    reminders_enabled=existing.reminders_enabled if existing else True,
-                )
-            )
         await message.answer(texts.LINKED, reply_markup=keyboards.main_menu())
-        user = await bot_user(message.from_user.id)
         await message.answer(
             texts.home(linked.subscription, billing.tariffs),
             reply_markup=keyboards.home(linked.subscription, billing.tariffs, user.reminders_enabled),

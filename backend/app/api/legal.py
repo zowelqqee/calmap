@@ -21,6 +21,14 @@ router = APIRouter(prefix="/legal", tags=["legal"])
 
 LEGAL_DIR = Path(__file__).resolve().parent.parent / "legal"
 EFFECTIVE_DATE = "14.10.2026"
+#: Pages revised after EFFECTIVE_DATE; a consent's date matches its version in
+#: app/services/consent.py.
+REVISED = {
+    "privacy": "25.10.2026",
+    "terms": "25.10.2026",
+    "consent": "25.10.2026",
+    "photo-consent": "15.10.2026",
+}
 PAGES = {
     "privacy": "privacy.md",
     "terms": "terms.md",
@@ -130,7 +138,7 @@ def _page(
     source = (LEGAL_DIR / PAGES[name]).read_text(encoding="utf-8").format(
         operator=operator,
         email=email,
-        effective_date=EFFECTIVE_DATE,
+        effective_date=REVISED.get(name, EFFECTIVE_DATE),
         ai_processor=ai_processor,
         ai_country=ai_country,
         vision_processor=vision_processor,

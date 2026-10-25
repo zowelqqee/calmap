@@ -24,8 +24,9 @@ openssl rand -hex 24          # пароли PostgreSQL
 |---|---|
 | `SECRET_KEY` | результат `openssl rand -hex 32` |
 | `DOMAIN`, `CORS_ORIGINS`, `RECIPE_IMAGE_PUBLIC_BASE_URL` | ваш домен API |
-| `SMSRU_API_ID`, `SMS_SENDER` | ключ SMS.ru и имя отправителя для кодов входа |
+| `SMSRU_API_ID`, `SMS_SENDER` | ключ SMS.ru и имя отправителя (пусто, пока SMS не подключён) |
 | `TELEGRAM_BOT_API_SECRET` | общий секрет с ботом оплаты (`openssl rand -hex 32`), то же значение в `.env.bot` |
+| `TELEGRAM_BOT_USERNAME` | @username бота без `@`: приложение предлагает код входа в Telegram |
 | `POSTGRES_PASSWORD` | пароль суперпользователя (обслуживание, бэкапы) |
 | `APP_DB_PASSWORD` и пароль внутри `DATABASE_URL` | роль backend-а `calmap_app` без прав суперпользователя |
 | `BOT_DB_PASSWORD` и пароль внутри `DATABASE_URL` в `.env.bot` | роль бота `calmap_bot`, видит только схему `bot` |
@@ -213,8 +214,10 @@ docker compose run --rm --entrypoint python backend \
 
 Настройка — в [INTEGRATIONS.md](INTEGRATIONS.md). Минимум для запуска продаж:
 
-- [ ] SMS-вход: договор с SMS.ru, пополненный баланс, согласованное имя отправителя,
-      `SMS_PROVIDER=smsru`. Без этого пользователи не смогут войти.
+- [ ] Вход: код от Telegram-бота — `TELEGRAM_BOT_USERNAME=<бот без @>` в `.env`
+      (бот и `TELEGRAM_BOT_API_SECRET` уже нужны для оплаты). SMS — позже:
+      договор с SMS-провайдером, `SMS_PROVIDER=smsru`. Без SMS войти могут только
+      пользователи Telegram.
 - [ ] Telegram-бот оплаты (`bot/`, запускается профилем `https`):
       Все переменные бота — в `.env.bot`, не в `.env`.
       1. @BotFather → `/newbot`, токен в `BOT_TOKEN`; `YOOKASSA_RETURN_URL` =

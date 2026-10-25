@@ -91,10 +91,13 @@ class Settings(BaseSettings):
     assistant_model: str = "gpt-4o-mini"
 
     # Subscriptions. Payment happens in a Telegram bot, which pushes the status to
-    # /v1/bot/* authenticated with TELEGRAM_BOT_API_SECRET. The app reads it only
-    # and does not link to the bot.
+    # /v1/bot/* authenticated with TELEGRAM_BOT_API_SECRET. The app reads it only;
+    # it opens the bot for sign-in codes, never for payment.
     trial_days: int = 3
     telegram_bot_api_secret: str = ""
+    #: The bot's @username without "@". With the bot secret set, the app offers
+    #: sign-in codes from the bot (t.me/<username>?start=login).
+    telegram_bot_username: str = ""
 
     # VK ID sign-in: tokens are verified by the user-info endpoint with our client_id.
     vk_userinfo_url: str = "https://id.vk.com/oauth2/user_info"
@@ -132,6 +135,17 @@ class Settings(BaseSettings):
             if self.telegram_bot_api_secret and len(self.telegram_bot_api_secret) < 32:
                 raise ValueError("TELEGRAM_BOT_API_SECRET must contain at least 32 characters")
         return self
+
+    @property
+    def sms_enabled(self) -> bool:
+        """SMS codes can be delivered. The stub provider is refused in production."""
+        return self.sms_provider != "stub" or self.env != "production"
+
+    @property
+    def telegram_login_url(self) -> str | None:
+        if not (self.telegram_bot_username and self.telegram_bot_api_secret):
+            return None
+        return f"https://t.me/{self.telegram_bot_username.lstrip('@')}?start=login"
 
     @property
     def sync_database_url(self) -> str:

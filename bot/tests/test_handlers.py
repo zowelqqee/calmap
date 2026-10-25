@@ -185,3 +185,52 @@ def test_help_names_the_seller():
     from calmap_bot import texts
 
     assert "Сервис Calmap. Продавец: ИП Тестов" in texts.help_text("support@calmap.ru", "ИП Тестов")
+
+
+async def test_login_code_for_a_new_account_links_it_after_sign_in(env, chat):
+    uid, phone = 7_000_101, "79990000101"
+    await chat.send(uid, text="/start login")
+    assert "Код для входа" in chat.session.texts()[-1]
+    assert "₽" not in chat.session.texts()[-1]  # no prices in the sign-in flow
+
+    # Someone else's contact gets no code.
+    await chat.send(uid, contact=Contact(phone_number=phone, first_name="x", user_id=uid + 1))
+    assert env.backend.login_codes == []
+
+    await chat.send(uid, text="/code")
+    await chat.send(uid, contact=Contact(phone_number="+" + phone, first_name="x", user_id=uid))
+    code_message = chat.session.texts()[-1]
+    assert "<code>123456</code>" in code_message and "+7 999 ***-**-01" in code_message
+    assert env.backend.login_codes[-1] == {"phone": phone, "telegram_user_id": uid}
+
+    # The user signs in to the app, which creates the account; the bot links it.
+    env.backend.add_account(phone, uid)
+    await chat.send(uid, text="📅 Моя подписка")
+    assert "Пробный период" in chat.session.texts()[-1]
+    async with env.db.session() as session:
+        assert (await session.get(BotUser, uid)).phone == phone
+
+
+async def test_linked_user_gets_a_code_without_sharing_again(env, chat, linked_user):
+    await chat.send(linked_user, text="/start login")
+    assert "<code>123456</code>" in chat.session.texts()[-1]
+    assert env.backend.login_codes[-1]["telegram_user_id"] == linked_user
+
+    await chat.press(linked_user, "login:other")
+    assert "Поделиться номером" in chat.session.texts()[-1]
+
+
+async def test_login_code_rate_limited(env, chat):
+    uid = 7_000_102
+    env.backend.login_retry_after = 45
+    await chat.send(uid, text="/code")
+    await chat.send(uid, contact=Contact(phone_number="79990000102", first_name="x", user_id=uid))
+    assert "через 45 секунд" in chat.session.texts()[-1]
+
+
+async def test_login_needs_a_russian_mobile(env, chat):
+    uid = 7_000_103
+    await chat.send(uid, text="/code")
+    await chat.send(uid, contact=Contact(phone_number="+380501234567", first_name="x", user_id=uid))
+    assert "российскому" in chat.session.texts()[-1]
+    assert env.backend.login_codes == []

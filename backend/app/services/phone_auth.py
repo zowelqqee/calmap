@@ -1,9 +1,13 @@
-"""Sign-in by a Russian mobile number confirmed with an SMS code.
+"""Sign-in by a Russian mobile number confirmed with a one-time code.
 
 149-FZ names authorisation by the subscriber number of a Russian operator as one of
 the permitted methods. Codes are six digits, live five minutes, allow five attempts
 and are stored only as an HMAC. Sending is limited per number, per IP (the auth rate
 limiter) and per day for the whole service, so SMS spend cannot be pumped.
+
+A code goes out by SMS or through our Telegram bot. The bot asks for the code only
+after the user shares their own contact, which Telegram confirms for the sender's
+account; limits for those codes count per Telegram account instead of per network.
 """
 
 from __future__ import annotations
@@ -78,9 +82,12 @@ def network_key(ip: str | None) -> str | None:
 class IssuedCode:
     expires_in: int
     resend_in: int
+    #: The code itself, only for the Telegram channel: the bot delivers it.
+    code: str | None = None
 
 
 Purpose = Literal["sign_in", "delete_account"]
+Channel = Literal["sms", "telegram"]
 
 MESSAGES: dict[str, str] = {
     "sign_in": "Calmap: код входа {code}. Никому его не сообщайте.",
@@ -92,15 +99,21 @@ MESSAGES: dict[str, str] = {
 
 
 async def issue_code(
-    session: AsyncSession, phone: str, ip: str | None, purpose: Purpose = "sign_in"
+    session: AsyncSession,
+    phone: str,
+    ip: str | None,
+    purpose: Purpose = "sign_in",
+    channel: Channel = "sms",
+    network: str | None = None,
 ) -> IssuedCode:
+    """`network` replaces the IP-derived limit key (the bot passes "tg:<user id>")."""
     # Serialise requests for one number until the transaction ends, so parallel
     # requests cannot all pass the limits below before any of them is recorded.
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"sms:{phone}"}
     )
     now = datetime.now(timezone.utc)
-    network = network_key(ip)
+    network = network or network_key(ip)
     last_sent = await session.scalar(
         select(func.max(PhoneCode.created_at)).where(PhoneCode.phone == phone)
     )
@@ -142,16 +155,20 @@ async def issue_code(
         )
         if (sent_from_network or 0) >= settings.sms_per_network_daily:
             raise PhoneAuthError(429, "too many codes from this network", retry_after=3600)
-    sent_today = await session.scalar(
-        select(func.count())
-        .select_from(PhoneCode)
-        .where(PhoneCode.created_at > now - timedelta(days=1))
-    )
-    if (sent_today or 0) >= settings.sms_daily_limit:
-        logger.error("daily SMS limit %s reached; phone sign-in is paused", settings.sms_daily_limit)
-        raise PhoneAuthError(503, "sms limit reached")
-    if (sent_today or 0) == int(settings.sms_daily_limit * 0.8):
-        logger.warning("80%% of the daily SMS limit used (%s)", sent_today)
+    if channel == "sms":
+        # Telegram codes cost nothing and do not use up the SMS budget.
+        sent_today = await session.scalar(
+            select(func.count())
+            .select_from(PhoneCode)
+            .where(PhoneCode.created_at > now - timedelta(days=1), PhoneCode.channel == "sms")
+        )
+        if (sent_today or 0) >= settings.sms_daily_limit:
+            logger.error(
+                "daily SMS limit %s reached; SMS sign-in is paused", settings.sms_daily_limit
+            )
+            raise PhoneAuthError(503, "sms limit reached")
+        if (sent_today or 0) == int(settings.sms_daily_limit * 0.8):
+            logger.warning("80%% of the daily SMS limit used (%s)", sent_today)
 
     # Codes hold a phone number: nothing older than a day is kept.
     await session.execute(delete(PhoneCode).where(PhoneCode.created_at < now - timedelta(days=1)))
@@ -170,12 +187,19 @@ async def issue_code(
         PhoneCode(
             phone=phone,
             purpose=purpose,
+            channel=channel,
             code_hash=_hash(phone, code),
             expires_at=now + timedelta(seconds=settings.phone_code_ttl_seconds),
             ip_address=network,
         )
     )
     await session.flush()
+    if channel == "telegram":
+        return IssuedCode(
+            expires_in=settings.phone_code_ttl_seconds,
+            resend_in=settings.phone_code_resend_seconds,
+            code=code,
+        )
     await get_sms_provider().send(phone, MESSAGES[purpose].format(code=code), ip)
     return IssuedCode(
         expires_in=settings.phone_code_ttl_seconds,

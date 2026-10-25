@@ -36,6 +36,21 @@ class BotLinkRequest(BaseModel):
     telegram_username: str | None = Field(default=None, max_length=64)
 
 
+class BotLoginCodeRequest(BaseModel):
+    """The user asked the bot for a sign-in code and shared their own contact (the
+    bot checks contact.user_id == from.id)."""
+
+    phone: str = Field(min_length=10, max_length=20)
+    telegram_user_id: int = Field(gt=0)
+
+
+class BotLoginCodeOut(BaseModel):
+    code: str
+    expires_in: int
+    #: False: signing in with this code creates the account.
+    account_exists: bool
+
+
 class BotLinkOut(BaseModel):
     user_id: uuid.UUID
     subscription: SubscriptionOut
