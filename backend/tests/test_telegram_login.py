@@ -81,3 +81,12 @@ async def test_without_sms_deletion_needs_recent_sign_in(client, monkeypatch):
     # The session started seconds ago: that confirms the deletion.
     deleted = await client.request("DELETE", "/v1/auth/me", json={})
     assert deleted.status_code == 204, deleted.text
+
+
+async def test_smsru_without_a_key_is_not_offered(client, monkeypatch):
+    monkeypatch.setattr(settings, "sms_provider", "smsru")
+    monkeypatch.setattr(settings, "smsru_api_id", "")
+    assert (await client.get("/v1/auth/phone/channels")).json()["sms"] is False
+    assert (await client.post("/v1/auth/phone/code", json={"phone": new_phone()})).status_code == 503
+    monkeypatch.setattr(settings, "smsru_api_id", "key")
+    assert (await client.get("/v1/auth/phone/channels")).json()["sms"] is True

@@ -138,8 +138,11 @@ class Settings(BaseSettings):
 
     @property
     def sms_enabled(self) -> bool:
-        """SMS codes can be delivered. The stub provider is refused in production."""
-        return self.sms_provider != "stub" or self.env != "production"
+        """SMS codes can be delivered: SMS.ru with its key, or the stub outside
+        production (it is refused there)."""
+        if self.sms_provider == "smsru":
+            return bool(self.smsru_api_id)
+        return self.env != "production"
 
     @property
     def telegram_login_url(self) -> str | None:
