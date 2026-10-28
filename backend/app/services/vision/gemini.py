@@ -17,10 +17,9 @@ import json
 import time
 from typing import Any
 
-import httpx
-
 from app.core.config import settings
-from app.services.vision.base import CatalogHint, RawCandidate, VisionResult, build_prompt
+from app.services.llm_http import post_json
+from app.services.vision.base import CatalogHint, VisionResult, build_prompt, parse_items
 
 DEFAULT_MODEL = "gemini-2.5-flash"
 GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -91,37 +90,26 @@ class GeminiVisionProvider:
         }
 
         started = time.perf_counter()
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(
-                f"{self._base_url}/models/{self.model}:generateContent",
-                params={"key": settings.gemini_api_key},
-                json=payload,
-            )
-            response.raise_for_status()
-            body = response.json()
+        body = await post_json(
+            f"{self._base_url}/models/{self.model}:generateContent",
+            # Header, not ?key=: error messages may include the URL, and a key in
+            # the query string would end up in logs.
+            {"x-goog-api-key": settings.gemini_api_key},
+            payload,
+            timeout=self._timeout,
+        )
         latency_ms = int((time.perf_counter() - started) * 1000)
 
-        known = {c.slug for c in catalog}
-        candidates: list[RawCandidate] = []
         try:
             text = body["candidates"][0]["content"]["parts"][0]["text"]
-            for item in json.loads(text).get("items", []):
-                # Hallucinated slugs are dropped rather than guessed at: a wrong product
-                # silently logged is worse than a missing one the user adds by hand.
-                if item.get("slug") not in known:
-                    continue
-                candidates.append(
-                    RawCandidate(
-                        slug=item["slug"],
-                        grams=max(1.0, float(item.get("grams", 0))),
-                        confidence=min(1.0, max(0.0, float(item.get("confidence", 0.5)))),
-                        alternatives=[a for a in item.get("alternatives", []) if a in known][:3],
-                    )
-                )
-        except (KeyError, IndexError, ValueError, json.JSONDecodeError):
-            candidates = []
+            parsed = json.loads(text)
+        except (KeyError, IndexError, TypeError, ValueError):
+            parsed = {}
+        # Hallucinated slugs are dropped rather than guessed at: a wrong product
+        # silently logged is worse than a missing one the user adds by hand.
+        candidates = parse_items(parsed.get("items") if isinstance(parsed, dict) else None, catalog)
 
-        usage = body.get("usageMetadata", {})
+        usage = body.get("usageMetadata", {}) if isinstance(body, dict) else {}
         cost = (
             usage.get("promptTokenCount", 0) * INPUT_USD_PER_MTOK
             + usage.get("candidatesTokenCount", 0) * OUTPUT_USD_PER_MTOK

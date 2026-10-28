@@ -12,9 +12,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Protocol
 
-import httpx
-
 from app.core.config import settings
+from app.services.llm_http import ProviderError, post_json
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +49,8 @@ class StubAssistantProvider:
     model = "stub-v1"
 
     async def reply(self, messages: list[dict[str, str]]) -> AssistantReply:
+        if settings.env == "production":
+            raise RuntimeError("stub assistant provider is disabled in production")
         text = messages[-1]["content"] if messages else ""
         return AssistantReply(
             provider=self.name,
@@ -72,27 +73,24 @@ class OpenAICompatibleAssistantProvider:
     async def reply(self, messages: list[dict[str, str]]) -> AssistantReply:
         if not settings.assistant_api_key or not settings.assistant_base_url:
             raise RuntimeError("ASSISTANT_API_KEY and ASSISTANT_BASE_URL are required")
-        payload = {
+        payload: dict = {
             "model": self.model,
             "messages": messages,
             "temperature": 0.2,
             "max_tokens": 700,
         }
+        url = f"{settings.assistant_base_url.rstrip('/')}/chat/completions"
+        headers = {"Authorization": f"Bearer {settings.assistant_api_key}"}
         started = time.perf_counter()
         try:
-            client_options = {"timeout": 45.0}
-            if settings.openai_proxy_url:
-                client_options.update(proxy=settings.openai_proxy_url, trust_env=False)
-            async with httpx.AsyncClient(**client_options) as client:
-                response = await client.post(
-                    f"{settings.assistant_base_url.rstrip('/')}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.assistant_api_key}"},
-                    json=payload,
-                )
-                response.raise_for_status()
-                body = response.json()
-        except httpx.HTTPError as exc:
-            raise RuntimeError("assistant provider is unavailable") from exc
+            body = await post_json(url, headers, payload, timeout=45.0)
+        except ProviderError as exc:
+            adjusted = _adjust_for_model(payload, exc)
+            if adjusted is None:
+                raise
+            # Newer OpenAI models take max_completion_tokens and only the default
+            # temperature; older and compatible endpoints take the classic names.
+            body = await post_json(url, headers, adjusted, timeout=45.0)
         choices = body.get("choices") or []
         if not choices or not choices[0].get("message", {}).get("content"):
             raise RuntimeError("assistant provider returned no message")
@@ -105,6 +103,20 @@ class OpenAICompatibleAssistantProvider:
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
         )
+
+
+def _adjust_for_model(payload: dict, exc: ProviderError) -> dict | None:
+    """The same request without the parameters the model refused, or None."""
+    if exc.status != 400:
+        return None
+    error = exc.error
+    text = f"{error.get('param') or ''} {error.get('message') or ''}"
+    adjusted = dict(payload)
+    if "max_tokens" in text and "max_tokens" in adjusted:
+        adjusted["max_completion_tokens"] = adjusted.pop("max_tokens")
+    if "temperature" in text:
+        adjusted.pop("temperature", None)
+    return adjusted if adjusted != payload else None
 
 
 @lru_cache

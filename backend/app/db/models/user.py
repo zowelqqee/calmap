@@ -33,6 +33,8 @@ class User(Base, UUIDPrimaryKey, Timestamped):
     __tablename__ = "users"
 
     email: Mapped[str | None] = mapped_column(String(320), unique=True, index=True)
+    #: Russian mobile number confirmed by SMS, normalised to 7XXXXXXXXXX.
+    phone: Mapped[str | None] = mapped_column(String(16), unique=True, index=True)
     name: Mapped[str | None] = mapped_column(String(120))
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     password_hash: Mapped[str | None] = mapped_column(String(128))
@@ -42,6 +44,48 @@ class User(Base, UUIDPrimaryKey, Timestamped):
 
     profile: Mapped[UserProfile | None] = relationship(back_populates="user", uselist=False)
     identities: Mapped[list[OAuthIdentity]] = relationship(back_populates="user")
+
+
+class AuthSession(Base, UUIDPrimaryKey, Timestamped):
+    """One signed-in device. Tokens carry its id; revoking it signs the device out.
+
+    The refresh token rotates on every use: only the current one (or, for a short
+    grace period, the one before it, in case the answer was lost) is accepted. An
+    older one being presented means it was copied, and the session is revoked.
+    """
+
+    __tablename__ = "auth_sessions"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    refresh_jti: Mapped[str] = mapped_column(String(32), nullable=False)
+    previous_jti: Mapped[str | None] = mapped_column(String(32))
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PhoneCode(Base, UUIDPrimaryKey, Timestamped):
+    """One sign-in or account-deletion code, sent by SMS or handed to the Telegram
+    bot. Only an HMAC of the code is stored."""
+
+    __tablename__ = "phone_codes"
+
+    phone: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    #: sign_in | delete_account — a code works only for what it was sent for.
+    purpose: Mapped[str] = mapped_column(
+        String(16), default="sign_in", server_default="sign_in", nullable=False
+    )
+    #: sms | telegram — how the code was delivered; the SMS budget counts sms only.
+    channel: Mapped[str] = mapped_column(
+        String(16), default="sms", server_default="sms", nullable=False
+    )
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ip_address: Mapped[str | None] = mapped_column(String(45))
 
 
 class OAuthIdentity(Base, UUIDPrimaryKey, Timestamped):

@@ -3,7 +3,17 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from sqlalchemy import Boolean, Date, Float, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Date,
+    Float,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -38,7 +48,14 @@ class Product(Base, UUIDPrimaryKey, Timestamped):
 
     prices: Mapped[list[ProductPrice]] = relationship(back_populates="product")
 
-    __table_args__ = (Index("ix_products_name_trgm", "name"),)
+    # Trigram GIN index: serves the substring search (lower(name) LIKE '%q%').
+    __table_args__ = (
+        Index(
+            "ix_products_name_trgm",
+            text("lower(name) gin_trgm_ops"),
+            postgresql_using="gin",
+        ),
+    )
 
 
 class ProductPrice(Base, UUIDPrimaryKey, Timestamped):

@@ -37,9 +37,11 @@ async def search_products(
 ) -> list[ProductOut]:
     statement = select(Product).where(Product.is_active.is_(True))
     if q:
-        # Case-insensitive substring for now. Swap for pg_trgm similarity once the
-        # catalogue outgrows a few thousand rows — the index is already declared.
-        statement = statement.where(func.lower(Product.name).contains(q.lower()))
+        # Case-insensitive substring served by the trigram index; "%" and "_" in the
+        # query are literal characters, not wildcards.
+        statement = statement.where(
+            func.lower(Product.name).contains(q.lower(), autoescape=True)
+        )
     if category:
         statement = statement.where(Product.category == category)
 

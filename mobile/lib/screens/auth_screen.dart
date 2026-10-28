@@ -1,9 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/api_client.dart';
+import '../core/legal.dart';
 import '../core/oauth_service.dart';
 import '../core/theme.dart';
 
+/// Sign-in by a Russian mobile number and a one-time code (the first sign-in
+/// creates the account). The code comes from the Calmap Telegram bot and/or by
+/// SMS, whichever the server offers. VK ID is shown as "available later" until
+/// it is enabled.
 class AuthScreen extends StatefulWidget {
   const AuthScreen({
     required this.api,
@@ -19,33 +28,135 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen> {
-  final email = TextEditingController();
-  final password = TextEditingController();
-  bool register = false;
-  bool loading = false;
-  bool obscurePassword = true;
-  String? error;
+  final phone = TextEditingController();
+  final code = TextEditingController();
   final oauth = OAuthService();
+
+  /// The number the code was sent to (normalised digits, 7XXXXXXXXXX).
+  String? sentTo;
+
+  /// How the current code is delivered: "telegram" or "sms".
+  String via = 'sms';
+  bool loading = false;
+
+  /// Delivery channels the server offers; SMS until it answers.
+  bool smsAvailable = true;
+  String? telegramUrl;
+
+  /// Shown once the server says this sign-in creates a new account.
+  bool consentNeeded = false;
+  bool personalDataConsent = false;
+  int resendIn = 0;
+  Timer? _resendTimer;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadChannels();
+  }
+
+  Future<void> _loadChannels() async {
+    try {
+      final channels = await widget.api.get('/v1/auth/phone/channels');
+      if (!mounted) return;
+      setState(() {
+        smsAvailable = channels['sms'] == true;
+        telegramUrl = channels['telegram_url'] as String?;
+      });
+    } on Exception {
+      // Older server or no network: keep the SMS flow.
+    }
+  }
 
   @override
   void dispose() {
-    email.dispose();
-    password.dispose();
+    _resendTimer?.cancel();
+    phone.dispose();
+    code.dispose();
     super.dispose();
   }
 
-  Future<void> _submit() async {
+  /// 10 digits after +7 for a Russian mobile number, or null.
+  String? get _phoneDigits {
+    var digits = phone.text.replaceAll(RegExp(r'\D'), '');
+    if (digits.length == 11 && (digits[0] == '7' || digits[0] == '8')) {
+      digits = digits.substring(1);
+    }
+    return digits.length == 10 && digits.startsWith('9') ? digits : null;
+  }
+
+  void _startResendTimer(int seconds) {
+    _resendTimer?.cancel();
+    setState(() => resendIn = seconds);
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || resendIn <= 1) {
+        timer.cancel();
+        if (mounted) setState(() => resendIn = 0);
+        return;
+      }
+      setState(() => resendIn -= 1);
+    });
+  }
+
+  /// Opens the bot; it asks for the contact and sends the code for that number.
+  Future<void> _requestTelegramCode() async {
+    final url = telegramUrl;
+    final digits = _phoneDigits;
+    if (url == null) return;
+    if (digits == null) {
+      setState(() => error = 'Введите российский мобильный номер');
+      return;
+    }
+    setState(() {
+      sentTo = '7$digits';
+      via = 'telegram';
+      error = null;
+      code.clear();
+    });
+    await _openTelegram(url);
+  }
+
+  Future<void> _openTelegram(String url) async {
+    var opened = false;
+    try {
+      opened = await launchUrl(
+        Uri.parse(url),
+        mode: LaunchMode.externalApplication,
+      );
+    } on PlatformException {
+      opened = false;
+    }
+    if (!opened && mounted) {
+      setState(
+        () => error =
+            'Не удалось открыть Telegram. Установите его и '
+            'повторите.',
+      );
+    }
+  }
+
+  Future<void> _requestCode() async {
+    final digits = _phoneDigits;
+    if (digits == null) {
+      setState(() => error = 'Введите российский мобильный номер');
+      return;
+    }
     setState(() {
       loading = true;
       error = null;
     });
     try {
-      final tokens = await widget.api.post(
-        register ? '/v1/auth/register' : '/v1/auth/login',
-        {'email': email.text.trim(), 'password': password.text},
-      );
-      await widget.api.saveTokens(tokens);
-      await widget.onAuthenticated();
+      final sent = await widget.api.post('/v1/auth/phone/code', {
+        'phone': '+7$digits',
+      });
+      if (!mounted) return;
+      setState(() {
+        sentTo = '7$digits';
+        via = 'sms';
+        code.clear();
+      });
+      _startResendTimer((sent['resend_in'] as num?)?.toInt() ?? 60);
     } on ApiException catch (exception) {
       if (mounted) setState(() => error = exception.message);
     } finally {
@@ -53,36 +164,111 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  Future<void> _oauth(String provider) async {
+  Future<void> _verify() async {
+    final number = sentTo;
+    if (number == null || code.text.length != 6 || loading) return;
+    if (consentNeeded && !personalDataConsent) {
+      setState(() => error = 'Отметьте согласие на обработку данных');
+      return;
+    }
     setState(() {
       loading = true;
       error = null;
     });
     try {
-      final credential = switch (provider) {
-        'apple' => await oauth.apple(),
-        'google' => await oauth.google(),
-        _ => await oauth.vk(),
-      };
-      final tokens = await widget.api.post('/v1/auth/oauth/$provider', {
-        'id_token': credential.token,
-        'email': credential.email,
+      final tokens = await widget.api.post('/v1/auth/phone/verify', {
+        'phone': '+$number',
+        'code': code.text,
+        'personal_data_consent': personalDataConsent,
       });
-      await widget.api.saveTokens(tokens);
+      await widget.api.startSession(tokens);
       await widget.onAuthenticated();
-    } catch (exception) {
-      if (mounted) {
-        setState(
-          () => error = exception.toString().replaceFirst('Bad state: ', ''),
-        );
-      }
+    } on ApiException catch (exception) {
+      if (!mounted) return;
+      setState(() {
+        if (exception.statusCode == 422) {
+          // New account: the code is still valid, the consent is missing.
+          consentNeeded = true;
+          error = 'Это новый аккаунт. Отметьте согласие и нажмите «Войти».';
+        } else {
+          error = exception.message;
+        }
+      });
     } finally {
       if (mounted) setState(() => loading = false);
     }
   }
 
+  Future<void> _vk() async {
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      final credential = await oauth.vk();
+      final tokens = await widget.api.post('/v1/auth/oauth/vk', {
+        'id_token': credential.token,
+        'personal_data_consent': personalDataConsent,
+      });
+      await widget.api.startSession(tokens);
+      await widget.onAuthenticated();
+    } on ApiException catch (exception) {
+      if (mounted) {
+        setState(() {
+          if (exception.statusCode == 422) {
+            consentNeeded = true;
+            error = 'Отметьте согласие на обработку данных и повторите вход.';
+          } else {
+            error = exception.message;
+          }
+        });
+      }
+    } on OAuthNotConfigured {
+      if (mounted) setState(() => error = 'Этот способ входа пока недоступен');
+    } on PlatformException catch (exception) {
+      // flutter_appauth reports a closed browser as a platform error.
+      final cancelled =
+          exception.code.contains('cancel') ||
+          (exception.message ?? '').toLowerCase().contains('cancel');
+      if (mounted && !cancelled) {
+        setState(() => error = 'Не удалось войти через VK ID');
+      }
+    } catch (_) {
+      if (mounted) setState(() => error = 'Не удалось войти через VK ID');
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  String get _sentToLabel {
+    final n = sentTo ?? '';
+    if (n.length != 11) return '+$n';
+    return '+7 ${n.substring(1, 4)} ${n.substring(4, 7)}-'
+        '${n.substring(7, 9)}-${n.substring(9)}';
+  }
+
+  String get _intro {
+    if (telegramUrl != null && smsAvailable) {
+      return 'Укажите номер телефона — пришлём код в Telegram или SMS. '
+          'Аккаунт создастся автоматически.';
+    }
+    if (telegramUrl != null) {
+      return 'Укажите номер телефона — код пришлёт бот Calmap в Telegram. '
+          'Аккаунт создастся автоматически.';
+    }
+    return 'Укажите номер телефона — пришлём код в SMS. '
+        'Аккаунт создастся автоматически.';
+  }
+
   @override
   Widget build(BuildContext context) {
+    final codeStep = sentTo != null;
+    final telegram = telegramUrl;
+    final viaTelegram = via == 'telegram';
+    // The phone step's main button: Telegram when the bot is on, SMS otherwise.
+    final VoidCallback? requestPrimary = telegram != null
+        ? _requestTelegramCode
+        : (smsAvailable ? _requestCode : null);
     return Scaffold(
       body: SafeArea(
         child: ListView(
@@ -112,120 +298,174 @@ class _AuthScreenState extends State<AuthScreen> {
             ),
             const SizedBox(height: 24),
             Text(
-              'Добро пожаловать',
+              codeStep ? 'Введите код' : 'Вход в Calmap',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.displayMedium,
             ),
             const SizedBox(height: 10),
             Text(
-              'Войдите или создайте аккаунт, чтобы продолжить',
+              codeStep
+                  ? (viaTelegram
+                        ? 'В боте Calmap нажмите «Поделиться номером» — он '
+                              'пришлёт код для $_sentToLabel'
+                        : 'Отправили SMS на $_sentToLabel')
+                  : _intro,
               textAlign: TextAlign.center,
               style: Theme.of(
                 context,
               ).textTheme.bodyLarge?.copyWith(color: mutedInk),
             ),
-            const SizedBox(height: 34),
-            TextField(
-              controller: email,
-              keyboardType: TextInputType.emailAddress,
-              textInputAction: TextInputAction.next,
-              decoration: const InputDecoration(labelText: 'Email'),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: password,
-              obscureText: obscurePassword,
-              onSubmitted: (_) => _submit(),
-              decoration: InputDecoration(
-                labelText: 'Пароль',
-                suffixIcon: IconButton(
-                  style: IconButton.styleFrom(
-                    backgroundColor: Colors.transparent,
-                    side: BorderSide.none,
+            const SizedBox(height: 30),
+            if (!codeStep)
+              TextField(
+                controller: phone,
+                keyboardType: TextInputType.phone,
+                autofillHints: const [AutofillHints.telephoneNumber],
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[\d\s()+-]')),
+                  LengthLimitingTextInputFormatter(18),
+                ],
+                onSubmitted: (_) => _requestCode(),
+                decoration: const InputDecoration(
+                  labelText: 'Номер телефона',
+                  prefixText: '+7 ',
+                  hintText: '999 123-45-67',
+                ),
+              )
+            else ...[
+              TextField(
+                controller: code,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                autofillHints: const [AutofillHints.oneTimeCode],
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(6),
+                ],
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 26, letterSpacing: 8),
+                onChanged: (value) {
+                  if (value.length == 6 && !consentNeeded) _verify();
+                },
+                decoration: const InputDecoration(hintText: '••••••'),
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  TextButton(
+                    onPressed: loading
+                        ? null
+                        : () => setState(() {
+                            sentTo = null;
+                            error = null;
+                          }),
+                    child: const Text('Изменить номер'),
                   ),
-                  onPressed: () =>
-                      setState(() => obscurePassword = !obscurePassword),
-                  icon: Icon(
-                    obscurePassword
-                        ? Icons.visibility_outlined
-                        : Icons.visibility_off_outlined,
+                  if (viaTelegram && telegram != null)
+                    TextButton(
+                      onPressed: loading ? null : () => _openTelegram(telegram),
+                      child: const Text('Открыть Telegram'),
+                    )
+                  else
+                    TextButton(
+                      onPressed: loading || resendIn > 0 ? null : _requestCode,
+                      child: Text(
+                        resendIn > 0
+                            ? 'Новый код через $resendIn с'
+                            : 'Отправить снова',
+                      ),
+                    ),
+                ],
+              ),
+            ],
+            if (consentNeeded) ...[
+              const SizedBox(height: 6),
+              // 152-FZ art. 9: consent is a separate act, not part of the terms.
+              CheckboxListTile(
+                value: personalDataConsent,
+                onChanged: loading
+                    ? null
+                    : (value) =>
+                          setState(() => personalDataConsent = value ?? false),
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                activeColor: olive,
+                title: const Text(
+                  'Даю согласие на обработку моих персональных данных',
+                  style: TextStyle(fontSize: 14),
+                ),
+                subtitle: GestureDetector(
+                  onTap: () => openLegalPage(context, widget.api, 'consent'),
+                  child: const Text(
+                    'Текст согласия',
+                    style: TextStyle(
+                      color: olive,
+                      decoration: TextDecoration.underline,
+                    ),
                   ),
                 ),
               ),
-            ),
+            ],
             if (error != null) ...[
               const SizedBox(height: 12),
               Text(error!, style: const TextStyle(color: Colors.redAccent)),
             ],
             const SizedBox(height: 20),
             FilledButton(
-              onPressed: loading ? null : _submit,
+              onPressed: loading ? null : (codeStep ? _verify : requestPrimary),
               child: loading
                   ? const SizedBox.square(
                       dimension: 22,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : Text(register ? 'Создать аккаунт' : 'Войти'),
+                  : Text(
+                      codeStep
+                          ? 'Войти'
+                          : (telegram != null
+                                ? 'Получить код в Telegram'
+                                : 'Получить код'),
+                    ),
             ),
-            TextButton(
-              onPressed: loading
-                  ? null
-                  : () => setState(() => register = !register),
-              child: Text(
-                register ? 'У меня уже есть аккаунт' : 'Зарегистрироваться',
+            if (!codeStep && telegram != null && smsAvailable) ...[
+              const SizedBox(height: 10),
+              OutlinedButton(
+                onPressed: loading ? null : _requestCode,
+                child: const Text('Получить код по SMS'),
               ),
-            ),
-            const SizedBox(height: 14),
-            const Row(
-              children: [
-                Expanded(child: Divider()),
-                Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 12),
-                  child: Text('или'),
-                ),
-                Expanded(child: Divider()),
-              ],
-            ),
-            const SizedBox(height: 14),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _OAuthButton(
-                  label: 'Apple',
-                  onTap: loading ? null : () => _oauth('apple'),
-                ),
-                const SizedBox(width: 8),
-                _OAuthButton(
-                  label: 'Google',
-                  onTap: loading ? null : () => _oauth('google'),
-                ),
-                const SizedBox(width: 8),
-                _OAuthButton(
-                  label: 'VK',
-                  onTap: loading ? null : () => _oauth('vk'),
+            ],
+            if (!codeStep) ...[
+              const SizedBox(height: 14),
+              const Row(
+                children: [
+                  Expanded(child: Divider()),
+                  Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 12),
+                    child: Text('или'),
+                  ),
+                  Expanded(child: Divider()),
+                ],
+              ),
+              const SizedBox(height: 14),
+              OutlinedButton(
+                onPressed: OAuthService.vkAvailable && !loading ? _vk : null,
+                child: const Text('Войти через VK ID'),
+              ),
+              if (!OAuthService.vkAvailable) ...[
+                const SizedBox(height: 6),
+                Text(
+                  'Будет доступно позже',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.copyWith(color: mutedInk),
                 ),
               ],
-            ),
+            ],
+            const SizedBox(height: 22),
+            LegalLinksText(api: widget.api, prefix: 'Продолжая, вы принимаете'),
           ],
         ),
       ),
     );
   }
-}
-
-class _OAuthButton extends StatelessWidget {
-  const _OAuthButton({required this.label, required this.onTap});
-
-  final String label;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) => OutlinedButton(
-    onPressed: onTap,
-    style: OutlinedButton.styleFrom(
-      minimumSize: const Size(96, 48),
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-    ),
-    child: Text(label),
-  );
 }

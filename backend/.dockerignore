@@ -9,3 +9,4 @@ __pycache__/
 tests/
 .git/
 .DS_Store
+docker/egress/id_ed25519*

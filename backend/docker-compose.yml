@@ -1,13 +1,28 @@
+# Containers keep their logs bounded and cannot gain privileges through setuid
+# binaries; backend and bot run without any Linux capabilities.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-calmap}
       POSTGRES_USER: ${POSTGRES_USER:-calmap}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-db-password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Least-privilege roles for the backend and the bot (docker/db-roles.sh).
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
+      BOT_DB_PASSWORD: ${BOT_DB_PASSWORD:?set BOT_DB_PASSWORD in .env}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker/db-roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+      - ./docker/db-roles.sh:/db-roles.sh:ro
+    networks: [internal]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -17,21 +32,109 @@ services:
   backend:
     build: .
     restart: unless-stopped
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://calmap:change-this-db-password@db:5432/calmap}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env}
       PORT: 8000
-      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+      # Client addresses are taken from X-Forwarded-For only when Caddy sent it.
+      FORWARDED_ALLOW_IPS: 172.28.0.10
     depends_on:
       db:
         condition: service_healthy
+    # Published on loopback only, for checks from the server itself; the public
+    # entry point is Caddy (HTTPS).
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     volumes:
       - media_data:/app/media
       - ../data:/data:ro
+    networks: [internal]
+
+  bot:
+    build: ../bot
+    restart: unless-stopped
+    profiles: ["https", "bot"]
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    # The bot's own secrets (Telegram token, YooKassa keys, its database role):
+    # the backend never sees them, and the bot never sees the backend's.
+    env_file:
+      - path: .env.bot
+        required: false
+    environment:
+      CALMAP_API_URL: http://backend:8000
+    depends_on:
+      db:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    networks: [internal]
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    profiles: ["https"]
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env to use the https profile}
+      # Only for a bot on another server; by default /v1/bot/* is closed.
+      BOT_ALLOWED_IPS: ${BOT_ALLOWED_IPS:-127.0.0.1/32}
+      # YooKassa's published notification addresses; override if they change.
+      YOOKASSA_ALLOWED_IPS: ${YOOKASSA_ALLOWED_IPS:-185.71.76.0/27 185.71.77.0/27 77.75.153.0/25 77.75.156.11/32 77.75.156.35/32 77.75.154.128/25 2a02:5180::/32}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+    networks:
+      internal:
+        ipv4_address: 172.28.0.10
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    profiles: ["https", "backup"]
+    logging: *logging
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      PGHOST: db
+      PGDATABASE: ${POSTGRES_DB:-calmap}
+      PGUSER: ${POSTGRES_USER:-calmap}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      # Optional: dumps are encrypted (AES-256, openssl) when set.
+      BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:-}
+    volumes:
+      - ./docker/backup.sh:/backup.sh:ro
+      - ${BACKUP_DIR:-../backups}:/backups
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [internal]
+
+networks:
+  internal:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
 
 volumes:
   postgres_data:
   media_data:
+  caddy_data:
+  caddy_config:
