@@ -22,7 +22,14 @@ from app.services.auth_sessions import (
 )
 from app.services.oauth import OAuthVerificationError, verify_oauth_token
 from app.services.consent import record_consent
-from app.services.phone_auth import PhoneAuthError, check_code, issue_code, normalize_phone
+from app.services.phone_auth import (
+    PhoneAuthError,
+    check_code,
+    ensure_review_code,
+    is_review_phone,
+    issue_code,
+    normalize_phone,
+)
 from app.services.sms import SmsError
 from app.services.subscription import new_subscription
 from app.schemas.auth import (
@@ -109,6 +116,8 @@ async def verify_phone_code(
     if phone is None:
         raise HTTPException(422, "phone must be a Russian mobile number")
     try:
+        if is_review_phone(phone):
+            await ensure_review_code(session, phone, request.client.host if request.client else None)
         code_row = await check_code(session, phone, payload.code)
     except PhoneAuthError as exc:
         # Count the failed attempt even though the request fails.

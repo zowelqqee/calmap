@@ -87,7 +87,7 @@ class IssuedCode:
 
 
 Purpose = Literal["sign_in", "delete_account"]
-Channel = Literal["sms", "telegram"]
+Channel = Literal["sms", "telegram", "review"]
 
 MESSAGES: dict[str, str] = {
     "sign_in": "Calmap: код входа {code}. Никому его не сообщайте.",
@@ -105,6 +105,7 @@ async def issue_code(
     purpose: Purpose = "sign_in",
     channel: Channel = "sms",
     network: str | None = None,
+    fixed_code: str | None = None,
 ) -> IssuedCode:
     """`network` replaces the IP-derived limit key (the bot passes "tg:<user id>")."""
     # Serialise requests for one number until the transaction ends, so parallel
@@ -182,7 +183,7 @@ async def issue_code(
         )
         .values(consumed_at=now)
     )
-    code = f"{secrets.randbelow(1_000_000):06d}"
+    code = fixed_code or f"{secrets.randbelow(1_000_000):06d}"
     session.add(
         PhoneCode(
             phone=phone,
@@ -194,6 +195,11 @@ async def issue_code(
         )
     )
     await session.flush()
+    if channel == "review":
+        return IssuedCode(
+            expires_in=settings.phone_code_ttl_seconds,
+            resend_in=settings.phone_code_resend_seconds,
+        )
     if channel == "telegram":
         return IssuedCode(
             expires_in=settings.phone_code_ttl_seconds,
@@ -205,6 +211,32 @@ async def issue_code(
         expires_in=settings.phone_code_ttl_seconds,
         resend_in=settings.phone_code_resend_seconds,
     )
+
+
+def is_review_phone(phone: str) -> bool:
+    return bool(settings.review_phone and settings.review_code) and (
+        normalize_phone(settings.review_phone) == phone
+    )
+
+
+async def ensure_review_code(session: AsyncSession, phone: str, ip: str | None) -> None:
+    """Give the review number a live code equal to REVIEW_CODE. A new one is issued
+    only when the previous one expired or ran out of attempts, through the same
+    hourly limits, so guessing stays as slow as for any other number."""
+    now = datetime.now(timezone.utc)
+    live = await session.scalar(
+        select(PhoneCode.id).where(
+            PhoneCode.phone == phone,
+            PhoneCode.purpose == "sign_in",
+            PhoneCode.consumed_at.is_(None),
+            PhoneCode.expires_at > now,
+            PhoneCode.attempts < settings.phone_code_max_attempts,
+        )
+    )
+    if live is None:
+        await issue_code(
+            session, phone, ip, channel="review", fixed_code=settings.review_code
+        )
 
 
 async def check_code(

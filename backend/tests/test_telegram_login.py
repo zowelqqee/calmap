@@ -90,3 +90,39 @@ async def test_smsru_without_a_key_is_not_offered(client, monkeypatch):
     assert (await client.post("/v1/auth/phone/code", json={"phone": new_phone()})).status_code == 503
     monkeypatch.setattr(settings, "smsru_api_id", "key")
     assert (await client.get("/v1/auth/phone/channels")).json()["sms"] is True
+
+
+async def test_review_phone_signs_in_with_the_fixed_code(client, monkeypatch):
+    phone = new_phone()
+    monkeypatch.setattr(settings, "review_phone", "+" + phone)
+    monkeypatch.setattr(settings, "review_code", "424242")
+    wrong = await client.post(
+        "/v1/auth/phone/verify",
+        json={"phone": phone, "code": "000000", "personal_data_consent": True},
+    )
+    assert wrong.status_code == 401
+    ok = await client.post(
+        "/v1/auth/phone/verify",
+        json={"phone": phone, "code": "424242", "personal_data_consent": True},
+    )
+    assert ok.status_code == 200, ok.text
+    # Other numbers do not accept the review code.
+    other = await client.post(
+        "/v1/auth/phone/verify",
+        json={"phone": new_phone(), "code": "424242", "personal_data_consent": True},
+    )
+    assert other.status_code == 401
+
+
+async def test_review_code_guessing_is_limited(client, monkeypatch):
+    phone = new_phone()
+    monkeypatch.setattr(settings, "review_phone", phone)
+    monkeypatch.setattr(settings, "review_code", "424242")
+    statuses = []
+    for _ in range(settings.phone_code_max_attempts * 2 * settings.phone_codes_per_hour + 1):
+        response = await client.post(
+            "/v1/auth/phone/verify",
+            json={"phone": phone, "code": "000001", "personal_data_consent": True},
+        )
+        statuses.append(response.status_code)
+    assert statuses[-1] == 429

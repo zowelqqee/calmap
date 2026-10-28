@@ -1,3 +1,4 @@
+import re
 from functools import lru_cache
 from typing import Literal
 
@@ -27,6 +28,11 @@ class Settings(BaseSettings):
     phone_code_resend_seconds: int = 60
     phone_code_max_attempts: int = 5
     phone_codes_per_hour: int = 5
+    #: App Store / Google Play review: one number whose sign-in code is fixed,
+    #: since a reviewer receives neither SMS nor Telegram messages. Codes for it
+    #: are issued on demand with the usual lifetime, attempts and hourly limits.
+    review_phone: str = ""
+    review_code: str = ""
     #: Codes per day from one IPv4 address or IPv6 /64, across all numbers.
     #: Mobile carriers put many subscribers behind one IPv4 address (CGNAT), so
     #: this is a ceiling against pumping, not a per-person limit.
@@ -132,6 +138,8 @@ class Settings(BaseSettings):
                 or self.secret_key.startswith(("replace-with-", "change-me"))
             ):
                 raise ValueError("SECRET_KEY must contain at least 32 characters in production")
+            if self.review_phone and not re.fullmatch(r"[0-9]{6}", self.review_code):
+                raise ValueError("REVIEW_CODE must be six digits when REVIEW_PHONE is set")
             if self.telegram_bot_api_secret and len(self.telegram_bot_api_secret) < 32:
                 raise ValueError("TELEGRAM_BOT_API_SECRET must contain at least 32 characters")
         return self
