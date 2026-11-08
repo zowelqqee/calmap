@@ -229,26 +229,7 @@ class _SplashScreen extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 78,
-              height: 78,
-              decoration: BoxDecoration(
-                color: forest,
-                borderRadius: BorderRadius.circular(25),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x2B173D31),
-                    blurRadius: 28,
-                    offset: Offset(0, 12),
-                  ),
-                ],
-              ),
-              child: const Icon(
-                Icons.spa_outlined,
-                color: Color(0xFFE7D4AB),
-                size: 37,
-              ),
-            ),
+            Image.asset('assets/brand/logo.png', height: 88),
             const SizedBox(height: 20),
             Text('calmap', style: Theme.of(context).textTheme.displayMedium),
             const SizedBox(height: 4),

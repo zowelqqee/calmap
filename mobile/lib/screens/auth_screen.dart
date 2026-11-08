@@ -274,28 +274,7 @@ class _AuthScreenState extends State<AuthScreen> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(24, 46, 24, 28),
           children: [
-            Center(
-              child: Container(
-                width: 62,
-                height: 62,
-                decoration: BoxDecoration(
-                  color: forest,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x24173D31),
-                      blurRadius: 22,
-                      offset: Offset(0, 9),
-                    ),
-                  ],
-                ),
-                child: const Icon(
-                  Icons.spa_outlined,
-                  color: Color(0xFFE7D4AB),
-                  size: 29,
-                ),
-              ),
-            ),
+            Center(child: Image.asset('assets/brand/logo.png', height: 72)),
             const SizedBox(height: 24),
             Text(
               codeStep ? 'Введите код' : 'Вход в Calmap',

@@ -787,7 +787,7 @@ class _CalculationScreenState extends State<_CalculationScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.spa_outlined, size: 72, color: olive),
+              Image.asset('assets/brand/logo.png', height: 80),
               const SizedBox(height: 30),
               const Text(
                 'Создаём ваш план',
