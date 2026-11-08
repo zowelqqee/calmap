@@ -126,3 +126,16 @@ async def test_review_code_guessing_is_limited(client, monkeypatch):
         )
         statuses.append(response.status_code)
     assert statuses[-1] == 429
+
+
+async def test_review_phone_signs_in_twice_in_a_row(client, monkeypatch):
+    phone = new_phone()
+    monkeypatch.setattr(settings, "review_phone", phone)
+    monkeypatch.setattr(settings, "review_code", "424242")
+    monkeypatch.setattr(settings, "phone_code_resend_seconds", 60)
+    for _ in range(2):
+        response = await client.post(
+            "/v1/auth/phone/verify",
+            json={"phone": phone, "code": "424242", "personal_data_consent": True},
+        )
+        assert response.status_code == 200, response.text

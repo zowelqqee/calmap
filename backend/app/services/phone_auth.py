@@ -118,7 +118,9 @@ async def issue_code(
     last_sent = await session.scalar(
         select(func.max(PhoneCode.created_at)).where(PhoneCode.phone == phone)
     )
-    if last_sent is not None:
+    # The review number's code is fixed: a pause between codes protects nothing
+    # there and would block a second sign-in within the pause.
+    if last_sent is not None and channel != "review":
         wait = settings.phone_code_resend_seconds - int((now - last_sent).total_seconds())
         if wait > 0:
             raise PhoneAuthError(429, "code was sent recently", retry_after=wait)
