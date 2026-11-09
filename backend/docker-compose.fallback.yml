@@ -11,6 +11,8 @@ services:
   edge:
     build: ./docker/egress
     restart: unless-stopped
+    # Leads to Caddy, which runs in the https profile only.
+    profiles: ["https"]
     logging:
       driver: json-file
       options:
