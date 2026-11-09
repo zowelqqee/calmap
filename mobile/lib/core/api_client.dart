@@ -45,6 +45,21 @@ String configuredBaseUrl() {
   return configured.isNotEmpty ? configured : 'http://localhost:8000';
 }
 
+/// Fallback API address for networks that cannot reach the main one (e.g. a VPN
+/// that sends everything abroad: part of the networks abroad cannot open HTTPS
+/// connections to servers in Russia). Empty: no fallback. The same backend
+/// answers there through a server abroad (backend/docker-compose.fallback.yml).
+String? configuredFallbackUrl() {
+  const configured = String.fromEnvironment('API_FALLBACK_URL');
+  if (configured.isEmpty) return null;
+  if (kReleaseMode && Uri.tryParse(configured)?.scheme != 'https') {
+    throw StateError(
+      'API_FALLBACK_URL must be an https:// URL in release builds',
+    );
+  }
+  return configured.replaceAll(RegExp(r'/$'), '');
+}
+
 /// Russian text for the backend's machine-oriented error details.
 String humanizeApiError(int statusCode, dynamic detail) {
   if (detail is Map && detail['message'] is String) {
@@ -140,15 +155,27 @@ String humanizeApiError(int statusCode, dynamic detail) {
 }
 
 class ApiClient {
+  /// [fallbackBaseUrl] defaults to the build's API_FALLBACK_URL, but only with
+  /// the build's own [baseUrl]: a client given another address has no fallback.
   ApiClient({
     String? baseUrl,
+    String? fallbackBaseUrl,
     FlutterSecureStorage? storage,
     http.Client? client,
     LocalStore? localStore,
-  }) : baseUrl = (baseUrl ?? configuredBaseUrl()).replaceAll(RegExp(r'/$'), ''),
+  }) : _primaryBaseUrl = (baseUrl ?? configuredBaseUrl()).replaceAll(
+         RegExp(r'/$'),
+         '',
+       ),
+       _fallbackBaseUrl =
+           (fallbackBaseUrl ??
+                   (baseUrl == null ? configuredFallbackUrl() : null))
+               ?.replaceAll(RegExp(r'/$'), ''),
        _storage = storage ?? _defaultStorage,
        _client = client ?? http.Client(),
-       _localStore = localStore ?? LocalStore();
+       _localStore = localStore ?? LocalStore() {
+    _activeBaseUrl = _primaryBaseUrl;
+  }
 
   /// iOS: tokens stay on this device — not migrated through backups — and are
   /// readable after the first unlock (needed for requests from the background).
@@ -162,7 +189,18 @@ class ApiClient {
     mOptions: MacOsOptions(usesDataProtectionKeychain: false),
   );
 
-  final String baseUrl;
+  final String _primaryBaseUrl;
+  final String? _fallbackBaseUrl;
+  late String _activeBaseUrl;
+
+  /// The address requests go to now: the main one, or the fallback while the
+  /// main one does not answer from this network.
+  String get baseUrl => _activeBaseUrl;
+
+  /// The current choice between the main and the fallback address; null until
+  /// the first request, and again after a request fails to connect.
+  Future<void>? _choosing;
+
   final FlutterSecureStorage _storage;
   final http.Client _client;
   final LocalStore _localStore;
@@ -179,6 +217,7 @@ class ApiClient {
 
   static const _networkTimeout = Duration(seconds: 15);
   static const _slowTimeout = Duration(seconds: 75);
+  static const _probeTimeout = Duration(seconds: 5);
 
   String? _accessToken;
   String? _refreshToken;
@@ -346,6 +385,7 @@ class ApiClient {
         ? 'heic'
         : 'jpeg';
 
+    await _ensureBase();
     Future<http.Response> send() async {
       final request = http.MultipartRequest(
         'POST',
@@ -382,6 +422,7 @@ class ApiClient {
       return Map<String, dynamic>.from(decoded);
     } catch (error) {
       if (_isConnectivityError(error)) {
+        _choosing = null;
         throw ApiException(
           0,
           'Нет связи с сервером. Повторите, когда появится интернет.',
@@ -535,20 +576,45 @@ class ApiClient {
     Uri uri,
     Map<String, dynamic>? body, {
     required bool retry,
+    bool switched = false,
   }) async {
+    final choice = _ensureBase();
+    await choice;
+    final base = _activeBaseUrl;
+    final target = _onActiveBase(uri);
     final headers = <String, String>{'Content-Type': 'application/json'};
     if (_accessToken != null) headers['Authorization'] = 'Bearer $_accessToken';
-    final timeout = _timeoutFor(uri.path);
-    final response = await switch (method) {
-      'POST' => _client.post(uri, headers: headers, body: jsonEncode(body)),
-      'PATCH' => _client.patch(uri, headers: headers, body: jsonEncode(body)),
-      'DELETE' => _client.delete(
-        uri,
-        headers: headers,
-        body: body == null ? null : jsonEncode(body),
-      ),
-      _ => _client.get(uri, headers: headers),
-    }.timeout(timeout);
+    final timeout = _timeoutFor(target.path);
+    final http.Response response;
+    try {
+      response = await switch (method) {
+        'POST' => _client.post(
+          target,
+          headers: headers,
+          body: jsonEncode(body),
+        ),
+        'PATCH' => _client.patch(
+          target,
+          headers: headers,
+          body: jsonEncode(body),
+        ),
+        'DELETE' => _client.delete(
+          target,
+          headers: headers,
+          body: body == null ? null : jsonEncode(body),
+        ),
+        _ => _client.get(target, headers: headers),
+      }.timeout(timeout);
+    } catch (error) {
+      if (_fallbackBaseUrl == null || !_isConnectivityError(error)) rethrow;
+      // This address stopped answering from here: choose again. Only reads are
+      // repeated on the other address; a change may have reached the server.
+      if (identical(_choosing, choice)) _choosing = null;
+      if (method != 'GET' || switched) rethrow;
+      await _ensureBase();
+      if (_activeBaseUrl == base) rethrow;
+      return _send(method, uri, body, retry: retry, switched: true);
+    }
     if (response.statusCode == 401 && retry && _refreshToken != null) {
       if (await _refresh()) return _send(method, uri, body, retry: false);
       _expireSession();
@@ -564,6 +630,7 @@ class ApiClient {
   Future<bool> _doRefresh() async {
     final token = _refreshToken;
     if (token == null) return false;
+    await _ensureBase();
     try {
       final response = await _client
           .post(
@@ -616,7 +683,64 @@ class ApiClient {
             : null,
       );
     }
-    return _normalizeLocalUrls(decoded);
+    return _onActiveHost(_normalizeLocalUrls(decoded));
+  }
+
+  /// Chooses the address once, then reuses the choice: the main address if it
+  /// answers, otherwise the fallback. Neither answering means no network; the
+  /// current address stays and the next request asks again.
+  Future<void> _ensureBase() {
+    if (_fallbackBaseUrl == null) return Future<void>.value();
+    return _choosing ??= _chooseBase();
+  }
+
+  Future<void> _chooseBase() async {
+    for (final candidate in [_primaryBaseUrl, _fallbackBaseUrl!]) {
+      if (await _answers(candidate)) {
+        _activeBaseUrl = candidate;
+        return;
+      }
+    }
+    _choosing = null;
+  }
+
+  Future<bool> _answers(String base) async {
+    try {
+      final response = await _client
+          .get(Uri.parse('$base/health'))
+          .timeout(_probeTimeout);
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// [uri] built on either address, moved to the current one.
+  Uri _onActiveBase(Uri uri) {
+    final text = uri.toString();
+    for (final base in [_primaryBaseUrl, ?_fallbackBaseUrl]) {
+      if (base != _activeBaseUrl && text.startsWith(base)) {
+        return Uri.parse('$_activeBaseUrl${text.substring(base.length)}');
+      }
+    }
+    return uri;
+  }
+
+  /// Media URLs in responses point at the main address; on the fallback they
+  /// are loaded through it as well.
+  dynamic _onActiveHost(dynamic value) {
+    if (_activeBaseUrl == _primaryBaseUrl) return value;
+    if (value is List) return value.map(_onActiveHost).toList();
+    if (value is Map) {
+      return <String, dynamic>{
+        for (final entry in value.entries)
+          entry.key.toString(): _onActiveHost(entry.value),
+      };
+    }
+    if (value is String && value.startsWith('$_primaryBaseUrl/')) {
+      return '$_activeBaseUrl${value.substring(_primaryBaseUrl.length)}';
+    }
+    return value;
   }
 
   /// The local backend uses loopback URLs for generated media. On a phone,

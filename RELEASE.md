@@ -144,6 +144,48 @@ SSH-туннель и даёт backend-у SOCKS-прокси `egress:1080` вн�
 2. На московском: `docker compose up -d --build relay`.
 3. С компьютера: `ssh -J root@<зарубежный сервер> -p 2222 root@127.0.0.1`.
 
+### Запасной адрес API (для пользователей с VPN)
+
+Часть зарубежных сетей не открывает HTTPS-соединения с серверами в России: так
+режется трафик пользователей, у которых VPN отправляет всё за рубеж. Для них
+приложение переключается на запасной адрес `api2.calmap.ru`, если основной не
+ответил за 5 секунд. Запасной адрес — зарубежный сервер (тот же, что для `egress`):
+HAProxy там принимает 443 и 80 и передаёт их по обратному SSH-туннелю контейнера
+`edge` в Caddy московского сервера. TLS не расшифровывается за рубежом, сертификат
+`api2` получает сам Caddy в Москве.
+
+Нужны настроенные `egress` и пользователь `tunnel` (разделы выше).
+
+1. DNS в REG.RU: A-запись `api2` → IP зарубежного сервера.
+2. На зарубежном сервере порты 80 и 443 должны быть свободны:
+   `ss -tlnp | grep -E ':80 |:443 '` — пустой вывод. Затем:
+   ```bash
+   apt-get install -y haproxy
+   # содержимое backend/docker/egress/haproxy.cfg из репозитория:
+   nano /etc/haproxy/haproxy.cfg
+   haproxy -c -f /etc/haproxy/haproxy.cfg && systemctl restart haproxy
+   ```
+   Если на сервере включён файрвол, откройте 80/tcp и 443/tcp.
+3. В `.env` московского сервера добавьте в `COMPOSE_FILE`
+   `:docker-compose.fallback.yml` и строку `FALLBACK_DOMAIN=api2.calmap.ru`.
+4. Проверка конфигурации и запуск:
+   ```bash
+   cd /opt/calmap/backend
+   docker compose --profile https config -q
+   docker compose --profile https up -d --build edge caddy
+   docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+   docker compose logs --tail=50 caddy | grep -i -E 'api2|certificate|error'
+   ```
+   Через 1–2 минуты Caddy пишет `certificate obtained successfully` для `api2`.
+5. Проверка снаружи: `https://api2.calmap.ru/health` → `{"status":"ok",...}`;
+   `check-host.net` → HTTP — зарубежные узлы должны отвечать `200`.
+6. В `mobile/config/production.json` — `"API_FALLBACK_URL": "https://api2.calmap.ru"`,
+   затем новая сборка приложения.
+
+Через зарубежный узел проходит IP-адрес пользователя: это трансграничная передача
+(ст. 12 152-ФЗ). Она описана в политике и согласии; уведомление Роскомнадзора о
+трансграничной передаче должно быть подано до включения запасного адреса.
+
 ### Бэкапы
 
 Сервис `backup` раз в сутки пишет `pg_dump` в `BACKUP_DIR` (по умолчанию
@@ -241,6 +283,7 @@ docker compose run --rm --entrypoint python backend \
 ```bash
 cd mobile
 cp config/production.example.json config/production.json   # API_BASE_URL = https://<домен>
+# API_FALLBACK_URL = https://api2.<домен> (раздел «Запасной адрес API») или ""
 ```
 
 Release-сборка без `API_BASE_URL` намеренно не запускается.
