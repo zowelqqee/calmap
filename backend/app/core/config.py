@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     vision_api_key: str = ""
     vision_base_url: str = ""
     vision_model: str = "gpt-4o-mini"
+    #: "low": the provider looks at a 512 px copy at a fixed small price (enough to
+    #: tell dishes apart); "high"/"auto" cost several times more per photo.
+    vision_image_detail: Literal["low", "high", "auto"] = "low"
+    #: Upper bound for the JSON answer; a list of products is a few hundred tokens.
+    vision_max_tokens: int = 800
     llm_proxy_base_url: str = ""
 
     # Recipe photos are generated once per unique recipe at the daily 05:00 job.

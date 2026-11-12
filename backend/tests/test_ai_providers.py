@@ -152,3 +152,18 @@ async def test_vision_survives_malformed_model_output(provider_http):
 def test_items_that_are_not_a_list_give_no_candidates():
     for items in (None, 5, "rice", {"slug": "rice"}):
         assert parse_items(items, CATALOG) == []
+
+
+async def test_vision_sends_a_cheap_low_detail_image_with_a_bounded_answer(provider_http):
+    answers, requests = provider_http
+    answers += [
+        (400, {"error": {"param": "max_tokens", "message": "Use 'max_completion_tokens'"}}),
+        (200, chat('{"items": [{"slug": "rice", "grams": 150, "confidence": 0.9}]}')),
+    ]
+    result = await OpenAICompatibleVisionProvider().recognize(b"\xff\xd8jpeg", "image/jpeg", CATALOG)
+    assert [c.slug for c in result.candidates] == ["rice"]
+    image = requests[0]["messages"][1]["content"][1]["image_url"]
+    assert image["detail"] == "low"
+    assert requests[0]["max_tokens"] == settings.vision_max_tokens
+    # A newer model's refusal is answered with the parameter it asks for.
+    assert requests[1]["max_completion_tokens"] == settings.vision_max_tokens

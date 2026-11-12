@@ -89,3 +89,19 @@ async def post_json(url: str, headers: dict[str, str], payload: dict, timeout: f
             continue
         raise ProviderError(_describe(response.status_code, body), response.status_code, body)
     raise AssertionError("unreachable")
+
+
+def adjust_for_model(payload: dict, exc: ProviderError) -> dict | None:
+    """The same request without the parameters the model refused, or None."""
+    if exc.status != 400:
+        return None
+    error = exc.error
+    text = f"{error.get('param') or ''} {error.get('message') or ''}"
+    adjusted = dict(payload)
+    if "max_tokens" in text and "max_tokens" in adjusted:
+        adjusted["max_completion_tokens"] = adjusted.pop("max_tokens")
+    if "temperature" in text:
+        adjusted.pop("temperature", None)
+    if "reasoning_effort" in text:
+        adjusted.pop("reasoning_effort", None)
+    return adjusted if adjusted != payload else None

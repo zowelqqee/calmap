@@ -13,7 +13,7 @@ from functools import lru_cache
 from typing import Protocol
 
 from app.core.config import settings
-from app.services.llm_http import ProviderError, post_json
+from app.services.llm_http import ProviderError, adjust_for_model, post_json
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,7 +159,7 @@ class OpenAICompatibleAssistantProvider:
             try:
                 return await post_json(url, headers, payload, timeout=45.0)
             except ProviderError as exc:
-                adjusted = _adjust_for_model(payload, exc)
+                adjusted = adjust_for_model(payload, exc)
                 if adjusted is None:
                     raise
                 payload = adjusted
@@ -171,22 +171,6 @@ def _content(body: dict) -> str:
     if not choices:
         return ""
     return str(choices[0].get("message", {}).get("content") or "")
-
-
-def _adjust_for_model(payload: dict, exc: ProviderError) -> dict | None:
-    """The same request without the parameters the model refused, or None."""
-    if exc.status != 400:
-        return None
-    error = exc.error
-    text = f"{error.get('param') or ''} {error.get('message') or ''}"
-    adjusted = dict(payload)
-    if "max_tokens" in text and "max_tokens" in adjusted:
-        adjusted["max_completion_tokens"] = adjusted.pop("max_tokens")
-    if "temperature" in text:
-        adjusted.pop("temperature", None)
-    if "reasoning_effort" in text:
-        adjusted.pop("reasoning_effort", None)
-    return adjusted if adjusted != payload else None
 
 
 @lru_cache

@@ -47,7 +47,9 @@ class _DiaryScreenState extends State<DiaryScreen> {
       file = await picker.pickImage(
         source: source,
         imageQuality: 82,
-        maxWidth: 1600,
+        // Recognition looks at a 512 px copy: a larger photo only costs upload time.
+        maxWidth: 1024,
+        maxHeight: 1024,
         // Strip EXIF (GPS, device) before the photo leaves the phone.
         requestFullMetadata: false,
       );
