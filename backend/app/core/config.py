@@ -95,6 +95,12 @@ class Settings(BaseSettings):
     assistant_api_key: str = ""
     assistant_base_url: str = ""
     assistant_model: str = "gpt-4o-mini"
+    #: Upper bound for one answer. Reasoning models (gpt-5 family) spend part of it
+    #: on hidden reasoning, so it is well above the length of a short answer.
+    assistant_max_tokens: int = 1500
+    #: reasoning_effort for reasoning models, e.g. "low"; empty: not sent. Models
+    #: that do not know it get the request again without it.
+    assistant_reasoning_effort: str = ""
 
     # Subscriptions. Payment happens in a Telegram bot, which pushes the status to
     # /v1/bot/* authenticated with TELEGRAM_BOT_API_SECRET. The app reads it only;

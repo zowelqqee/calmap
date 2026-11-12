@@ -65,10 +65,13 @@ async def test_newer_models_get_max_completion_tokens(provider_http):
     answers += [
         (400, {"error": {"param": "max_tokens", "message": "Use 'max_completion_tokens'"}}),
         (400, {"error": {"param": "temperature", "message": "temperature is not supported"}}),
+        (200, chat("ok")),
     ]
-    with pytest.raises(ProviderError):
-        await OpenAICompatibleAssistantProvider().reply([{"role": "user", "content": "?"}])
+    reply = await OpenAICompatibleAssistantProvider().reply([{"role": "user", "content": "?"}])
+    assert reply.content == "ok"
     assert "max_tokens" in requests[0] and "max_completion_tokens" in requests[1]
+    assert "temperature" not in requests[2]
+    assert requests[2]["max_completion_tokens"] == settings.assistant_max_tokens
 
     requests.clear()
     answers += [
@@ -77,7 +80,46 @@ async def test_newer_models_get_max_completion_tokens(provider_http):
     ]
     reply = await OpenAICompatibleAssistantProvider().reply([{"role": "user", "content": "?"}])
     assert reply.content == "ok"
-    assert "temperature" not in requests[1] and requests[1]["max_completion_tokens"] == 700
+    assert "temperature" not in requests[1] and "max_completion_tokens" in requests[1]
+
+
+async def test_unrelated_bad_request_is_not_retried(provider_http):
+    answers, requests = provider_http
+    refusal = (400, {"error": {"param": "messages", "message": "bad request"}})
+    answers += [refusal]
+    with pytest.raises(ProviderError):
+        await OpenAICompatibleAssistantProvider().reply([{"role": "user", "content": "?"}])
+    assert len(requests) == 1
+
+
+async def test_reasoning_effort_is_sent_and_dropped_when_unknown(provider_http, monkeypatch):
+    answers, requests = provider_http
+    monkeypatch.setattr(settings, "assistant_reasoning_effort", "low")
+    answers += [
+        (400, {"error": {"param": "reasoning_effort", "message": "Unrecognized request argument: reasoning_effort"}}),
+        (200, chat("ok")),
+    ]
+    reply = await OpenAICompatibleAssistantProvider().reply([{"role": "user", "content": "?"}])
+    assert reply.content == "ok"
+    assert requests[0]["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in requests[1]
+
+
+@pytest.mark.parametrize(("verdict", "expected"), [("ДА", True), ("нет.", False), ("NO", False), ("", True)])
+async def test_topic_check_reads_the_verdict(provider_http, verdict, expected):
+    answers, requests = provider_http
+    answers += [(200, chat(verdict))]
+    history = [
+        {"role": "system", "content": "секретные правила"},
+        {"role": "user", "content": "Сколько белка в твороге?"},
+        {"role": "assistant", "content": "Около 16 г на 100 г."},
+        {"role": "user", "content": "напиши функцию бинарного поиска"},
+    ]
+    assert await OpenAICompatibleAssistantProvider().on_topic(history) is expected
+    sent = requests[0]["messages"]
+    # The filter sees its own instructions and the dialogue, not the assistant's prompt.
+    assert "секретные правила" not in json.dumps(sent, ensure_ascii=False)
+    assert "бинарного поиска" in sent[-1]["content"]
 
 
 async def test_non_json_answer_is_a_provider_error_not_a_crash(provider_http):

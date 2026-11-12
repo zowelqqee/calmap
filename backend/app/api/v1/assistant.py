@@ -17,7 +17,12 @@ from app.schemas.assistant import (
     AssistantConversationOut,
     AssistantMessageOut,
 )
-from app.services.assistant import SYSTEM_PROMPT, get_assistant_provider
+from app.services.assistant import (
+    OFF_TOPIC_REPLY,
+    SYSTEM_PROMPT,
+    AssistantReply,
+    get_assistant_provider,
+)
 from app.services.consent import require_consent
 from app.services.planning import current_targets
 
@@ -144,8 +149,26 @@ async def chat(
         conversation_id=conversation.id, role="user", content=payload.message, created_at=now
     )
     session.add(user_message)
+    provider = get_assistant_provider()
     try:
-        reply = await get_assistant_provider().reply(messages)
+        # Off-topic questions (code, homework, anything but nutrition and training)
+        # get a fixed answer; the model is not asked to answer them at all.
+        on_topic = await provider.on_topic(messages)
+    except (RuntimeError, OSError, httpx.HTTPError):
+        # The filter is a safeguard, not the service: the system prompt still
+        # keeps the answer on topic.
+        logger.warning("assistant topic check failed; answering", exc_info=True)
+        on_topic = True
+    try:
+        if on_topic:
+            reply = await provider.reply(messages)
+        else:
+            reply = AssistantReply(
+                provider="topic_filter",
+                model=provider.model,
+                content=OFF_TOPIC_REPLY,
+                raw_payload={"off_topic": True},
+            )
     except (RuntimeError, OSError, httpx.HTTPError):
         logger.exception("assistant provider failed")
         raise HTTPException(

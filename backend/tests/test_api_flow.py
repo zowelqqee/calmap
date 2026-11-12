@@ -879,3 +879,41 @@ async def test_eaten_needs_own_plan_item(auth_client: AsyncClient):
         headers={"Authorization": f"Bearer {other['access_token']}"},
     )
     assert foreign.status_code == 404
+
+
+async def test_off_topic_questions_get_the_fixed_answer(auth_client: AsyncClient, monkeypatch):
+    from app.api.v1 import assistant as assistant_api
+    from app.services.assistant import OFF_TOPIC_REPLY
+
+    class Provider:
+        model = "test-model"
+        answered: list[str] = []
+
+        async def on_topic(self, messages):
+            return "бинарного" not in messages[-1]["content"]
+
+        async def reply(self, messages):
+            from app.services.assistant import AssistantReply
+
+            self.answered.append(messages[-1]["content"])
+            return AssistantReply(provider="test", model=self.model, content="Про белок", raw_payload={})
+
+    provider = Provider()
+    monkeypatch.setattr(assistant_api, "get_assistant_provider", lambda: provider)
+    await complete_onboarding(auth_client)
+    await pay(auth_client, "pro")
+    await auth_client.post("/v1/me/consents", json={"document": "ai_assistant"})
+
+    off = await auth_client.post(
+        "/v1/assistant/chat", json={"message": "напиши функцию бинарного поиска"}
+    )
+    assert off.status_code == 200, off.text
+    assert off.json()["message"]["content"] == OFF_TOPIC_REPLY
+    assert provider.answered == []
+
+    on = await auth_client.post(
+        "/v1/assistant/chat",
+        json={"message": "Как добрать белок?", "conversation_id": off.json()["conversation_id"]},
+    )
+    assert on.json()["message"]["content"] == "Про белок"
+    assert provider.answered == ["Как добрать белок?"]
