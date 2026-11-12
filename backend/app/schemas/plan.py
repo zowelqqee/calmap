@@ -30,6 +30,8 @@ class PlanItemOut(BaseModel):
     image_url: str | None = None
     prep_minutes: int = 0
     difficulty: str = "easy"
+    #: Logged in the diary with the «Съел» button (a diary entry from the plan).
+    eaten: bool = False
 
 
 class PlanDayOut(BaseModel):

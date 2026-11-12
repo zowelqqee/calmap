@@ -20,6 +20,9 @@ class _PlanScreenState extends State<PlanScreen> {
   bool loading = true;
   String? error;
 
+  /// Plan items whose «Съел» request is in flight.
+  final Set<String> _eatenBusy = <String>{};
+
   String _iso(DateTime value) =>
       '${value.year}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
 
@@ -147,6 +150,48 @@ class _PlanScreenState extends State<PlanScreen> {
     } finally {
       if (mounted) setState(() => loading = false);
     }
+  }
+
+  Future<void> _toggleEaten(Map<String, dynamic> item) async {
+    final id = item['id'].toString();
+    if (_eatenBusy.contains(id) || plan == null) return;
+    setState(() => _eatenBusy.add(id));
+    try {
+      final eaten = await toggleEaten(widget.api, plan!['id'].toString(), item);
+      await _eatenChanged(id, eaten);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              eaten
+                  ? 'Записано в дневник: ${item['recipe_name']}'
+                  : 'Запись удалена из дневника',
+            ),
+          ),
+        );
+      }
+    } on ApiException catch (exception) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(exception.message)));
+      }
+    } finally {
+      if (mounted) setState(() => _eatenBusy.remove(id));
+    }
+  }
+
+  /// Marks the plan item and refreshes the day's totals from the diary.
+  Future<void> _eatenChanged(String id, bool eaten) async {
+    for (final day in List<dynamic>.from(plan?['days'] as List? ?? const [])) {
+      for (final raw in List<dynamic>.from(
+        (day as Map)['items'] as List? ?? const [],
+      )) {
+        if ((raw as Map)['id'].toString() == id) raw['eaten'] = eaten;
+      }
+    }
+    await _loadDiary();
+    if (mounted) setState(() {});
   }
 
   void _openSubPage(Widget screen) => _open(SubPage(child: screen));
@@ -430,6 +475,8 @@ class _PlanScreenState extends State<PlanScreen> {
             item: item,
             plan: plan!,
             selectedDay: selectedDate,
+            onEatenChanged: (eaten) =>
+                _eatenChanged(item['id'].toString(), eaten),
           ),
         ),
         child: Padding(
@@ -468,6 +515,12 @@ class _PlanScreenState extends State<PlanScreen> {
                       style: Theme.of(
                         context,
                       ).textTheme.bodySmall?.copyWith(color: mutedInk),
+                    ),
+                    const SizedBox(height: 6),
+                    _EatenButton(
+                      eaten: item['eaten'] == true,
+                      busy: _eatenBusy.contains(item['id'].toString()),
+                      onPressed: () => _toggleEaten(item),
                     ),
                   ],
                 ),
@@ -777,12 +830,16 @@ class RecipeDetailScreen extends StatefulWidget {
     required this.item,
     required this.plan,
     required this.selectedDay,
+    this.onEatenChanged,
     super.key,
   });
   final ApiClient api;
   final Map<String, dynamic> item;
   final Map<String, dynamic> plan;
   final DateTime selectedDay;
+
+  /// Tells the plan screen that «Съел» changed for this item.
+  final ValueChanged<bool>? onEatenChanged;
 
   @override
   State<RecipeDetailScreen> createState() => _RecipeDetailScreenState();
@@ -791,6 +848,37 @@ class RecipeDetailScreen extends StatefulWidget {
 class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
   Map<String, dynamic>? recipe;
   bool loading = true;
+  late bool eaten = widget.item['eaten'] == true;
+  bool eatenBusy = false;
+
+  Future<void> _toggleEaten() async {
+    setState(() => eatenBusy = true);
+    try {
+      final value = await toggleEaten(
+        widget.api,
+        widget.plan['id'].toString(),
+        {...widget.item, 'eaten': eaten},
+      );
+      if (!mounted) return;
+      setState(() => eaten = value);
+      widget.onEatenChanged?.call(value);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            value ? 'Записано в дневник' : 'Запись удалена из дневника',
+          ),
+        ),
+      );
+    } on ApiException catch (exception) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(exception.message)));
+      }
+    } finally {
+      if (mounted) setState(() => eatenBusy = false);
+    }
+  }
 
   @override
   void initState() {
@@ -919,6 +1007,13 @@ class _RecipeDetailScreenState extends State<RecipeDetailScreen> {
                   style: Theme.of(
                     context,
                   ).textTheme.bodySmall?.copyWith(color: mutedInk),
+                ),
+                const SizedBox(height: 16),
+                _EatenButton(
+                  eaten: eaten,
+                  busy: eatenBusy,
+                  large: true,
+                  onPressed: _toggleEaten,
                 ),
                 const SizedBox(height: 24),
                 Text(
@@ -1360,4 +1455,62 @@ class _ErrorCard extends StatelessWidget {
       ),
     ),
   );
+}
+
+/// «Съел»: logs the planned portion in the diary, or removes that entry again.
+/// Returns whether the item is eaten now.
+Future<bool> toggleEaten(
+  ApiClient api,
+  String planId,
+  Map<String, dynamic> item,
+) async {
+  final path = '/v1/meal-plans/$planId/items/${item['id']}/eaten';
+  if (item['eaten'] == true) {
+    await api.delete(path);
+    return false;
+  }
+  await api.post(path);
+  return true;
+}
+
+class _EatenButton extends StatelessWidget {
+  const _EatenButton({
+    required this.eaten,
+    required this.busy,
+    required this.onPressed,
+    this.large = false,
+  });
+
+  final bool eaten;
+  final bool busy;
+  final bool large;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final icon = busy
+        ? const SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(strokeWidth: 2, color: olive),
+          )
+        : Icon(eaten ? Icons.check_circle : Icons.check_circle_outline);
+    final label = Text(eaten ? 'Съедено · отменить' : 'Съел');
+    final density = large ? VisualDensity.standard : VisualDensity.compact;
+    final callback = busy ? null : onPressed;
+    if (eaten) {
+      return OutlinedButton.icon(
+        onPressed: callback,
+        icon: icon,
+        label: label,
+        style: OutlinedButton.styleFrom(visualDensity: density),
+      );
+    }
+    return FilledButton.icon(
+      onPressed: callback,
+      icon: icon,
+      label: label,
+      style: FilledButton.styleFrom(visualDensity: density),
+    );
+  }
 }

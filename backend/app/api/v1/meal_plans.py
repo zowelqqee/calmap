@@ -6,12 +6,20 @@ from datetime import date
 from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import ActiveAccess, CurrentProfile, CurrentUser, DbSession
-from app.db.models import MealPlan, MealPlanDay, MealPlanItem, ProgressEntry, Recipe
+from app.api.v1.diary import _out as diary_entry_out
+from app.db.models import (
+    DiaryEntry,
+    MealPlan,
+    MealPlanDay,
+    MealPlanItem,
+    ProgressEntry,
+    Recipe,
+)
 from app.domain.allergens import catalogue_exclusions
 from app.domain.enums import MealType
 from app.domain.solver import DayTargets, MenuRequest, build_day
@@ -27,6 +35,7 @@ from app.schemas.plan import (
     ShoppingListOut,
 )
 from app.schemas.retail import RetailOfferOut, ShoppingOffersOut
+from app.schemas.tracking import DiaryEntryOut
 from app.services.retail import get_retail_provider
 from app.services.planning import current_targets, generate_meal_plan, shopping_list
 
@@ -46,6 +55,7 @@ async def _serialize(session: DbSession, plan: MealPlan) -> PlanOut:
             .order_by(MealPlanDay.day)
         )
     ).all()
+    eaten = await _eaten_meals(session, plan)
     days = []
     for day_row in day_rows:
         items = []
@@ -68,6 +78,7 @@ async def _serialize(session: DbSession, plan: MealPlan) -> PlanOut:
                     image_url=recipe.image_url if recipe else None,
                     prep_minutes=recipe.prep_minutes if recipe else 0,
                     difficulty=recipe.difficulty if recipe else "easy",
+                    eaten=(day_row.day, item.meal_type, item.recipe_id) in eaten,
                 )
             )
         days.append(
@@ -100,6 +111,93 @@ async def _owned_plan(session: DbSession, plan_id: uuid.UUID, user_id: uuid.UUID
     if plan is None or plan.user_id != user_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "plan not found")
     return plan
+
+
+async def _eaten_meals(
+    session: DbSession, plan: MealPlan
+) -> set[tuple[date, MealType, uuid.UUID]]:
+    """Meals of the plan logged with «Съел», as (day, meal, recipe).
+
+    Matched by recipe rather than by plan item: swapping one dish re-creates the
+    day's items, and the other meals of the day must stay marked.
+    """
+    rows = await session.execute(
+        select(DiaryEntry.day, DiaryEntry.meal_type, DiaryEntry.recipe_id).where(
+            DiaryEntry.user_id == plan.user_id,
+            DiaryEntry.source == "plan",
+            DiaryEntry.recipe_id.is_not(None),
+            DiaryEntry.day >= plan.date_from,
+            DiaryEntry.day <= plan.date_to,
+        )
+    )
+    return {(day, meal, recipe_id) for day, meal, recipe_id in rows.all()}
+
+
+async def _owned_item(
+    session: DbSession, plan_id: uuid.UUID, item_id: uuid.UUID, user_id: uuid.UUID
+) -> tuple[MealPlanItem, MealPlanDay]:
+    plan = await _owned_plan(session, plan_id, user_id)
+    item = await session.get(MealPlanItem, item_id)
+    day_row = await session.get(MealPlanDay, item.day_id) if item is not None else None
+    if item is None or day_row is None or day_row.plan_id != plan.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "item not found")
+    return item, day_row
+
+
+def _same_meal(user_id: uuid.UUID, item: MealPlanItem, day_row: MealPlanDay):
+    return (
+        DiaryEntry.user_id == user_id,
+        DiaryEntry.source == "plan",
+        DiaryEntry.day == day_row.day,
+        DiaryEntry.meal_type == item.meal_type,
+        DiaryEntry.recipe_id == item.recipe_id,
+    )
+
+
+@router.post(
+    "/{plan_id}/items/{item_id}/eaten",
+    response_model=DiaryEntryOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def mark_eaten(
+    plan_id: uuid.UUID, item_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> DiaryEntryOut:
+    """«Съел»: logs the planned portion in the diary with the plan's own numbers.
+
+    Repeating it returns the existing entry instead of logging the meal twice.
+    """
+    item, day_row = await _owned_item(session, plan_id, item_id, user.id)
+    existing = await session.scalar(
+        select(DiaryEntry).where(*_same_meal(user.id, item, day_row)).limit(1)
+    )
+    if existing is not None:
+        return diary_entry_out(existing)
+    recipe = await session.get(Recipe, item.recipe_id)
+    entry = DiaryEntry(
+        user_id=user.id,
+        day=day_row.day,
+        meal_type=item.meal_type,
+        recipe_id=item.recipe_id,
+        name=recipe.name if recipe else "Блюдо из рациона",
+        grams=item.grams,
+        kcal=item.kcal,
+        protein_g=item.protein_g,
+        fat_g=item.fat_g,
+        carbs_g=item.carbs_g,
+        source="plan",
+    )
+    session.add(entry)
+    await session.flush()
+    return diary_entry_out(entry)
+
+
+@router.delete("/{plan_id}/items/{item_id}/eaten", status_code=status.HTTP_204_NO_CONTENT)
+async def unmark_eaten(
+    plan_id: uuid.UUID, item_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> None:
+    """Undo «Съел»: removes the diary entry the button created."""
+    item, day_row = await _owned_item(session, plan_id, item_id, user.id)
+    await session.execute(delete(DiaryEntry).where(*_same_meal(user.id, item, day_row)))
 
 
 @router.post("/generate", response_model=PlanOut, status_code=status.HTTP_201_CREATED)

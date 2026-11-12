@@ -7,6 +7,7 @@ diary → photo recognition. If this passes, the product's spine works.
 from __future__ import annotations
 
 import io
+import uuid
 from datetime import date, timedelta
 
 import pytest
@@ -811,3 +812,70 @@ async def test_production_refuses_stub_providers(auth_client: AsyncClient, monke
     )
     assert photo.status_code == 503
     assert "key" not in photo.text.lower()
+
+
+async def test_eaten_logs_the_planned_portion_once(auth_client: AsyncClient):
+    plan_id = (await complete_onboarding(auth_client))["plan_id"]
+    plan = (await auth_client.get(f"/v1/meal-plans/{plan_id}")).json()
+    day = plan["days"][0]
+    lunch = next(item for item in day["items"] if item["meal_type"] == "lunch")
+    assert lunch["eaten"] is False
+    url = f"/v1/meal-plans/{plan_id}/items/{lunch['id']}/eaten"
+
+    first = await auth_client.post(url)
+    again = await auth_client.post(url)
+    assert first.status_code == 201, first.text
+    assert again.json()["id"] == first.json()["id"]
+    entry = first.json()
+    assert entry["source"] == "plan"
+    assert entry["meal_type"] == "lunch"
+    assert entry["grams"] == lunch["grams"]
+    assert entry["kcal"] == lunch["kcal"]
+    assert entry["name"] == lunch["recipe_name"]
+
+    diary = (await auth_client.get(f"/v1/diary/{day['day']}")).json()
+    assert [e["id"] for e in diary["entries"]] == [entry["id"]]
+    assert diary["kcal"] == lunch["kcal"]
+    plan = (await auth_client.get(f"/v1/meal-plans/{plan_id}")).json()
+    marked = {i["meal_type"]: i["eaten"] for i in plan["days"][0]["items"]}
+    assert marked["lunch"] is True
+    assert not any(v for k, v in marked.items() if k != "lunch")
+
+    undo = await auth_client.delete(url)
+    assert undo.status_code == 204
+    diary = (await auth_client.get(f"/v1/diary/{day['day']}")).json()
+    assert diary["entries"] == []
+    plan = (await auth_client.get(f"/v1/meal-plans/{plan_id}")).json()
+    assert not any(i["eaten"] for i in plan["days"][0]["items"])
+
+
+async def test_eaten_mark_survives_swapping_another_meal(auth_client: AsyncClient):
+    plan_id = (await complete_onboarding(auth_client))["plan_id"]
+    plan = (await auth_client.get(f"/v1/meal-plans/{plan_id}")).json()
+    items = plan["days"][0]["items"]
+    breakfast = next(i for i in items if i["meal_type"] == "breakfast")
+    lunch = next(i for i in items if i["meal_type"] == "lunch")
+    await auth_client.post(f"/v1/meal-plans/{plan_id}/items/{breakfast['id']}/eaten")
+
+    swapped = await auth_client.post(f"/v1/meal-plans/{plan_id}/items/{lunch['id']}/swap")
+    assert swapped.status_code == 200, swapped.text
+    new_breakfast = next(
+        i for i in swapped.json()["days"][0]["items"] if i["meal_type"] == "breakfast"
+    )
+    assert new_breakfast["eaten"] is True
+
+
+async def test_eaten_needs_own_plan_item(auth_client: AsyncClient):
+    plan_id = (await complete_onboarding(auth_client))["plan_id"]
+    plan = (await auth_client.get(f"/v1/meal-plans/{plan_id}")).json()
+    item_id = plan["days"][0]["items"][0]["id"]
+
+    missing = await auth_client.post(f"/v1/meal-plans/{plan_id}/items/{uuid.uuid4()}/eaten")
+    assert missing.status_code == 404
+
+    other = await sign_in(auth_client)
+    foreign = await auth_client.post(
+        f"/v1/meal-plans/{plan_id}/items/{item_id}/eaten",
+        headers={"Authorization": f"Bearer {other['access_token']}"},
+    )
+    assert foreign.status_code == 404
