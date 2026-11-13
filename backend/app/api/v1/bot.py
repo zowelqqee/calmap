@@ -15,12 +15,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, select
 
 from app.api.deps import DbSession
 from app.api.v1.subscription import subscription_out
 from app.core.config import settings
-from app.db.models import PaymentStatus, Subscription, TelegramLink, User
+from app.db.models import AppleSubscription, PaymentStatus, Subscription, TelegramLink, User
 from app.schemas.subscription import (
     BotEventOut,
     BotLinkOut,
@@ -154,6 +154,14 @@ async def expiring(
         await session.execute(
             select(Subscription, TelegramLink.telegram_user_id)
             .join(TelegramLink, TelegramLink.user_id == Subscription.user_id)
+            # A running App Store subscription keeps access: no "ends soon" reminder.
+            .where(
+                ~exists().where(
+                    AppleSubscription.user_id == Subscription.user_id,
+                    AppleSubscription.revoked_at.is_(None),
+                    AppleSubscription.expires_at > now,
+                )
+            )
             .where(
                 (
                     (Subscription.payment_status == PaymentStatus.PAID)

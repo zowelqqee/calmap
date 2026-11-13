@@ -111,6 +111,18 @@ class Settings(BaseSettings):
     # /v1/bot/* authenticated with TELEGRAM_BOT_API_SECRET. The app reads it only;
     # it opens the bot for sign-in codes, never for payment.
     trial_days: int = 3
+
+    # App Store subscriptions (In-App Purchase). Purchases arrive as transactions
+    # signed by Apple; their certificate chain must end in one of the Apple root
+    # certificates in this directory (AppleRootCA-G3.cer, RELEASE.md). Without
+    # them App Store purchases are refused.
+    apple_bundle_id: str = "ru.calmap.app"
+    #: The app's Apple ID in App Store Connect; required for production purchases.
+    apple_app_id: int | None = 6832549322
+    apple_root_certs_dir: str = "apple-certs"
+    #: Product ID → tier. Product IDs as created in App Store Connect.
+    apple_product_base: str = "ru.calmap.app.base.month"
+    apple_product_pro: str = "ru.calmap.app.pro.month"
     telegram_bot_api_secret: str = ""
     #: The bot's @username without "@". With the bot secret set, the app offers
     #: sign-in codes from the bot (t.me/<username>?start=login).

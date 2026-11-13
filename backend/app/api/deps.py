@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import TokenClaims, decode_token
+from app.services.appstore import apple_entitlement
 from app.services.auth_sessions import is_active as session_is_active
 from app.db.models import Subscription, User, UserProfile
 from app.db.session import get_db
@@ -74,8 +75,8 @@ async def get_subscription(user: CurrentUser, session: DbSession) -> Subscriptio
 CurrentSubscription = Annotated[Subscription, Depends(get_subscription)]
 
 
-async def get_access(subscription: CurrentSubscription) -> Access:
-    return evaluate(subscription)
+async def get_access(subscription: CurrentSubscription, session: DbSession) -> Access:
+    return evaluate(subscription, apple=await apple_entitlement(session, subscription.user_id))
 
 
 CurrentAccess = Annotated[Access, Depends(get_access)]

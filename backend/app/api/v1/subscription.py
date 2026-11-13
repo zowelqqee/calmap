@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentSubscription, DbSession
 from app.db.models import Subscription
 from app.schemas.subscription import SubscriptionOut
+from app.services.appstore import apple_entitlement
 from app.services.subscription import (
     BLOCKED_MESSAGES,
     evaluate,
@@ -18,7 +19,8 @@ router = APIRouter(prefix="/me/subscription", tags=["subscription"])
 
 
 async def subscription_out(session: AsyncSession, subscription: Subscription) -> SubscriptionOut:
-    access = evaluate(subscription)
+    apple = await apple_entitlement(session, subscription.user_id)
+    access = evaluate(subscription, apple=apple)
     return SubscriptionOut(
         state=access.state,
         has_access=access.has_access,
@@ -31,6 +33,7 @@ async def subscription_out(session: AsyncSession, subscription: Subscription) ->
         limits=access.limits,
         message=BLOCKED_MESSAGES.get(access.state),
         telegram_linked=await is_telegram_linked(session, subscription.user_id),
+        app_store_active=apple is not None,
     )
 
 

@@ -1,7 +1,7 @@
-"""Subscription status, as reported by the Telegram payment bot.
+"""Subscription status: from the Telegram payment bot and from the App Store.
 
-The bot is the only writer of payment status. The app never sells anything itself:
-it reads the status below and opens the bot when the user has to pay.
+The bot writes `subscriptions`; App Store purchases (In-App Purchase) live in
+`apple_subscriptions`. Access takes the better of the two.
 """
 
 from __future__ import annotations
@@ -85,3 +85,29 @@ class SubscriptionEvent(Base, UUIDPrimaryKey, Timestamped):
     currency: Mapped[str | None] = mapped_column(String(3))
     telegram_payment_charge_id: Mapped[str | None] = mapped_column(String(255))
     payload: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+
+class AppleSubscription(Base, UUIDPrimaryKey, Timestamped):
+    """A subscription bought through the App Store (In-App Purchase).
+
+    One row per Apple subscription (its originalTransactionId), bound to the app
+    account that bought or restored it. Apple's signed transactions and server
+    notifications keep it current; access combines it with the bot's status.
+    """
+
+    __tablename__ = "apple_subscriptions"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    original_transaction_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    #: The latest transaction applied (a renewal or an upgrade changes it).
+    transaction_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    product_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    purchased_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: Set when Apple refunds or revokes the subscription.
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Production or Sandbox (TestFlight, App Review).
+    environment: Mapped[str] = mapped_column(String(16), nullable=False)

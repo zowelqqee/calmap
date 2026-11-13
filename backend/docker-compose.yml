@@ -52,6 +52,8 @@ services:
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     volumes:
       - media_data:/app/media
+      # Apple's root certificate for App Store purchases (RELEASE.md, «Подписки App Store»).
+      - ./docker/apple-certs:/app/apple-certs:ro
       - ../data:/data:ro
     networks: [internal]
 

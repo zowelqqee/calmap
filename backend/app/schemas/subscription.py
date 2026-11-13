@@ -22,6 +22,8 @@ class SubscriptionOut(BaseModel):
     #: Russian text for the paywall when there is no access
     message: str | None
     telegram_linked: bool
+    #: An App Store subscription is running: it is managed in the App Store settings.
+    app_store_active: bool = False
 
 
 # ------------------------------------------------------------------ bot contract
@@ -98,3 +100,15 @@ class ExpiringOut(BaseModel):
     state: str
     tier: str | None
     access_until: datetime
+
+
+class AppStoreTransactionIn(BaseModel):
+    """A transaction StoreKit returned after a purchase or a restore (Apple's JWS)."""
+
+    signed_transaction: str = Field(min_length=20, max_length=20000)
+
+
+class AppStoreNotificationIn(BaseModel):
+    """App Store Server Notifications V2 body."""
+
+    signedPayload: str = Field(min_length=20, max_length=100000)

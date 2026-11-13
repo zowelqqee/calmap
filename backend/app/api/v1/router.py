@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import require_access
 from app.api.v1 import (
+    appstore,
     assistant,
     auth,
     bot,
@@ -21,12 +22,13 @@ from app.api.v1 import (
 api_router = APIRouter(prefix="/v1")
 
 # Always available: sign-in and account management, consents, the questionnaire,
-# the subscription status itself and the payment bot's own API.
+# the subscription status itself, the payment bot's own API and App Store purchases.
 api_router.include_router(auth.router)
 api_router.include_router(onboarding.router)
 api_router.include_router(subscription.router)
 api_router.include_router(consents.router)
 api_router.include_router(bot.router)
+api_router.include_router(appstore.router)
 
 # Everything else requires a paid period or the trial.
 paid = [Depends(require_access)]

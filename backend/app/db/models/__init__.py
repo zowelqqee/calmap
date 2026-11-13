@@ -11,6 +11,7 @@ from app.db.models.diary import DiaryEntry, VisionRecognition
 from app.db.models.plan import MealPlan, MealPlanDay, MealPlanItem
 from app.db.models.subscription import (
     PAID_TIERS,
+    AppleSubscription,
     TIER_LIMITS,
     PaymentStatus,
     Subscription,
@@ -32,6 +33,7 @@ __all__ = [
     "PAID_TIERS",
     "TIER_LIMITS",
     "AccountDeletion",
+    "AppleSubscription",
     "AssistantConversation",
     "AuthSession",
     "AssistantMessage",

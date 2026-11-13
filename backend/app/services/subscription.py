@@ -1,7 +1,10 @@
 """Access rules derived from the stored payment status.
 
-Everything the app may do is decided here, from `subscriptions` alone:
+Everything the app may do is decided here, from `subscriptions` (the bot) and the
+active App Store subscription, if any:
 
+* an App Store subscription or the bot's paid period running → active, limits of
+  the higher tier of the two;
 * paid and `paid_until` in the future → active, limits of the paid tier;
 * never paid and the trial not over → trial;
 * otherwise → no access, with the reason (trial ended, expired, revoked).
@@ -27,6 +30,7 @@ from app.db.models import (
     TelegramLink,
     User,
 )
+from app.services.appstore import TIER_RANK, AppleEntitlement
 
 AccessState = Literal["trial", "active", "trial_ended", "expired", "revoked"]
 
@@ -71,10 +75,32 @@ class Access:
         return max(0, math.ceil(seconds / 86400))
 
 
-def evaluate(subscription: Subscription, now: datetime | None = None) -> Access:
+def evaluate(
+    subscription: Subscription,
+    now: datetime | None = None,
+    apple: AppleEntitlement | None = None,
+) -> Access:
     now = now or datetime.now(timezone.utc)
     status = subscription.payment_status
-    if status == PaymentStatus.PAID and subscription.paid_until and subscription.paid_until > now:
+    bot_active = (
+        status == PaymentStatus.PAID
+        and subscription.paid_until is not None
+        and subscription.paid_until > now
+    )
+    if apple is not None and apple.expires_at > now:
+        bot_rank = TIER_RANK.get(subscription.tier or "", 0) if bot_active else 0
+        if TIER_RANK.get(apple.tier, 0) >= bot_rank:
+            # Of equal tiers the later end counts.
+            until = apple.expires_at
+            if bot_active and subscription.tier == apple.tier:
+                until = max(until, subscription.paid_until)  # type: ignore[type-var]
+            return Access(
+                state="active",
+                tier=apple.tier,
+                paid_until=until,
+                trial_ends_at=subscription.trial_ends_at,
+            )
+    if bot_active:
         state: AccessState = "active"
         tier = subscription.tier
     elif status in (PaymentStatus.PAID, PaymentStatus.EXPIRED):
