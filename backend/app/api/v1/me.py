@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, status
 
-from app.api.deps import CurrentProfile, CurrentSubscription, CurrentUser, DbSession
-from app.db.models import TIER_PRICES_RUB
+from app.api.deps import CurrentProfile, CurrentUser, DbSession
 from app.schemas.onboarding import TargetsOut
-from app.services.planning import current_targets, store_targets, targets_for_profile
+from app.services.planning import (
+    current_targets,
+    latest_weight,
+    store_targets,
+    targets_for_profile,
+)
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -34,7 +38,7 @@ async def recalculate_targets(
 ) -> TargetsOut:
     """Recompute after a weight or goal change. The old row is kept, not overwritten —
     target history is what makes "why did my calories drop?" answerable."""
-    computed = targets_for_profile(profile)
+    computed = targets_for_profile(profile, weight_kg=await latest_weight(session, user.id))
     row = await store_targets(session, user.id, computed)
     return TargetsOut(
         bmr_kcal=row.bmr_kcal,
@@ -47,15 +51,3 @@ async def recalculate_targets(
         water_ml=row.water_ml,
         adjustments=row.adjustments,
     )
-
-
-@router.get("/entitlements")
-async def entitlements(subscription: CurrentSubscription) -> dict:
-    return {
-        "tier": subscription.tier,
-        "status": subscription.status,
-        "provider": subscription.provider,
-        "current_period_end": subscription.current_period_end,
-        "limits": subscription.limits,
-        "prices_rub": TIER_PRICES_RUB,
-    }

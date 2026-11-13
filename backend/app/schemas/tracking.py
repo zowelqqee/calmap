@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 from datetime import date
 
 from pydantic import BaseModel, Field, model_validator
@@ -74,7 +75,8 @@ class DiaryEntryCreate(BaseModel):
     protein_g: float = Field(default=0, ge=0, le=10000)
     fat_g: float = Field(default=0, ge=0, le=10000)
     carbs_g: float = Field(default=0, ge=0, le=10000)
-    source: str = "manual"
+    # "vision" and "repeat" are written only by their own endpoints, never by clients.
+    source: Literal["manual", "search", "plan", "barcode"] = "manual"
 
     @model_validator(mode="after")
     def exactly_one_reference(self) -> DiaryEntryCreate:
@@ -157,4 +159,4 @@ class VisionConfirmItem(BaseModel):
 class VisionConfirmRequest(BaseModel):
     day: date
     meal_type: MealType
-    items: list[VisionConfirmItem]
+    items: list[VisionConfirmItem] = Field(max_length=30)

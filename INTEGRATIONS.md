@@ -1,55 +1,213 @@
 # Подключение внешних интеграций
 
-Внутреннее API и entitlement-логика уже готовы. В production нужно только выбрать
-провайдера, задать секреты и направить callback-и на backend.
+Переменные backend-а задаются в `backend/.env`, бота — в `backend/.env.bot`. После изменения:
+`docker compose --profile https up -d`.
 
-## 1. Биллинг
+## 1. Подписка через Telegram-бота
 
-В `.env`:
-
-```dotenv
-BILLING_PROVIDER=yookassa
-BILLING_RETURN_URL=https://app.example.ru/billing/complete
-YOOKASSA_SHOP_ID=...
-YOOKASSA_SECRET_KEY=...
-```
-
-Для CloudPayments:
+Оплата проходит в Telegram-боте. Бот — единственный источник статуса оплаты:
+он сообщает backend-у каждое изменение, а приложение только читает итог.
 
 ```dotenv
-BILLING_PROVIDER=cloudpayments
-CLOUDPAYMENTS_PUBLIC_ID=...
-CLOUDPAYMENTS_SECRET=...
-CLOUDPAYMENTS_CHECKOUT_URL=https://pay.example.ru/checkout
+TRIAL_DAYS=3
+TELEGRAM_BOT_API_SECRET=...                   # openssl rand -hex 32
 ```
 
-Клиентский flow:
+Приложение не ссылается на бота и не показывает кнопок оплаты: при окончании
+подписки пользователь видит «Подписка закончилась. Продлите её, чтобы продолжить».
 
-1. `POST /v1/billing/checkout` с `{ "tier": "base" }` или `{ "tier": "pro" }`.
-2. Открыть `checkout_url` во внешнем браузере/webview.
-3. Provider webhook направить на
-   `POST /v1/billing/webhooks/yookassa` или
-   `POST /v1/billing/webhooks/cloudpayments`.
-4. После webhook читать `GET /v1/me/entitlements`.
+Бот реализован в [`bot/`](bot/README.md): ЮKassa, чеки 54-ФЗ, напоминания.
+Подключение ЮKassa — по API ЮKassa (самостоятельная интеграция), как в
+[docs/vendor/yookassa/telegram_integration.md](docs/vendor/yookassa/telegram_integration.md):
+платёж с `receipt` и телефоном покупателя, без которого при автоотправке чеков
+платёж не создаётся. Ниже —
+контракт backend-а, которым он пользуется.
 
-Webhook обрабатывается идемпотентно по `(provider, event_id)`. Для CloudPayments
-проверяется `Content-HMAC`; для YooKassa endpoint дополнительно нужно ограничить на
-ingress/firewall по официальным сетевым правилам провайдера.
+### Схема
 
-## 2. OAuth
+1. Пользователь входит в приложение по номеру телефона (SMS-код), номер
+   подтверждён.
+2. В боте пользователь нажимает кнопку «Поделиться контактом» (`request_contact`).
+   Бот проверяет, что контакт принадлежит отправителю (`contact.user_id == from.id`),
+   и вызывает `POST /v1/bot/link` с этим номером. Telegram-аккаунт привязывается к
+   аккаунту приложения с тем же номером (один к одному; повторная привязка
+   переносит связь).
+3. После оплаты бот вызывает `POST /v1/bot/subscription/events` со статусом `paid`.
+4. Приложение перечитывает статус при возврате в приложение и открывает доступ.
+
+### API для бота
+
+Все запросы — с заголовком `X-Bot-Secret: <TELEGRAM_BOT_API_SECRET>`. Без настроенного
+секрета эндпоинты отвечают 404, с неверным — 401.
+
+**`POST /v1/bot/link`** — привязка по номеру телефона.
+
+```json
+{"phone": "+79991234567", "telegram_user_id": 123456789, "telegram_username": "ivan"}
+```
+
+Ответ 200: `{"user_id": "...", "subscription": {...}}`. 404 — в приложении нет
+аккаунта с этим номером (попросите войти в приложение по этому номеру); 422 — номер
+не российский мобильный.
+
+**`POST /v1/bot/subscription/events`** — изменение статуса оплаты.
+
+```json
+{
+  "event_id": "tg-charge-6a1f...",
+  "telegram_user_id": 123456789,
+  "status": "paid",
+  "tier": "pro",
+  "paid_until": "2026-11-14T12:00:00+03:00",
+  "amount": 499,
+  "currency": "RUB",
+  "telegram_payment_charge_id": "6a1f..."
+}
+```
+
+| Поле | Правило |
+|---|---|
+| `event_id` | уникален; повтор того же события возвращает `processed: false` и ничего не меняет |
+| `status` | `paid` — доступ до `paid_until`; `revoked` — отмена/возврат, доступ закрывается сразу |
+| `tier` | `base` или `pro`; обязателен для `paid` |
+| `paid_until` | обязателен для `paid`; с часовым поясом; в будущем, не дальше 400 дней |
+| `currency` | `RUB` или `XTR` (Telegram Stars) |
+
+Последнее событие задаёт статус как есть: продление считает бот (например,
+`paid_until` = текущий `paid_until` + 30 дней). Ответ:
+`{"processed": true, "subscription": {...}}`. 404 — Telegram-аккаунт не привязан.
+
+**`GET /v1/bot/subscription/{telegram_user_id}`** — текущий статус (для команды
+«Моя подписка» в боте).
+
+**`GET /v1/bot/subscriptions/expiring?within_hours=24`** — привязанные пользователи,
+у которых доступ (оплата или пробный период) заканчивается в этом окне. Для
+напоминаний из бота.
+
+### Статус в ответах
+
+`subscription` во всех ответах совпадает с `GET /v1/me/subscription`:
+
+```json
+{
+  "state": "active",
+  "has_access": true,
+  "tier": "pro",
+  "payment_status": "paid",
+  "paid_until": "2026-11-14T09:00:00Z",
+  "trial_ends_at": "2026-10-17T09:00:00Z",
+  "access_until": "2026-11-14T09:00:00Z",
+  "days_left": 31,
+  "limits": {"vision_per_day": 30, "plan_days": 28, "assistant_messages_per_month": 200},
+  "message": null,
+  "telegram_linked": true,
+  "payment_available": true
+}
+```
+
+`state`: `trial`, `active`, `trial_ended`, `expired`, `revoked`. Без доступа
+`message` содержит текст для пользователя.
+
+### Безопасность
+
+- `/v1/bot/*` закрыт на публичном домене: бот обращается к backend-у внутри сети
+  compose. `BOT_ALLOWED_IPS` нужен только боту на другом сервере.
+- Секрет храните только в `.env` и `.env.bot`; при утечке смените в обоих.
+- События оплаты содержат `user_id` аккаунта, для которого создан платёж; если
+  Telegram-аккаунт привязан к другому аккаунту, backend отвечает 409.
+- `DELETE /v1/bot/link/{telegram_user_id}` снимает привязку (команда `/forget`).
+- Удаление аккаунта удаляет и привязку к Telegram, и журнал событий оплаты
+  пользователя. Платёжные документы (чеки) хранит платёжный сервис бота.
+
+## 2. Вход: код в Telegram, SMS-код и VK ID
+
+Основной способ — номер мобильного телефона российского оператора и одноразовый код.
+Код доставляется Telegram-ботом Calmap и/или по SMS.
+
+### Код от Telegram-бота
 
 ```dotenv
-APPLE_CLIENT_ID=ru.example.app
-GOOGLE_CLIENT_ID=...
-VK_USERINFO_URL=https://id.vk.com/oauth2/user_info
+TELEGRAM_BOT_USERNAME=calmap_pay_bot   # @username бота без @
+TELEGRAM_BOT_API_SECRET=...            # уже настроен для оплаты
 ```
 
-Клиент передаёт identity token в `POST /v1/auth/oauth/{apple|google|vk}`. Apple и
-Google проверяются по подписи, issuer, audience и rotating JWKS. VK проверяется
-серверным запросом к user-info endpoint. `test:<subject>` работает только в local и
-staging.
+1. Приложение запрашивает `GET /v1/auth/phone/channels` → `{"sms": false,
+   "telegram_url": "https://t.me/<бот>?start=login"}` и показывает кнопку
+   «Получить код в Telegram».
+2. Пользователь вводит номер, приложение открывает ссылку. Бот просит нажать
+   «📱 Поделиться номером»: Telegram передаёт номер аккаунта отправителя, бот
+   принимает только собственный контакт (`contact.user_id == from.id`, не пересланный).
+   Уже привязанный пользователь получает код сразу, по сохранённому номеру; кнопка
+   «Другой номер» снова запрашивает контакт. Команда `/code` делает то же самое.
+3. Бот вызывает `POST /v1/bot/login-code` `{"phone", "telegram_user_id"}` (с
+   `X-Bot-Secret`) и отправляет код пользователю. Сообщения входа не содержат цен.
+4. Пользователь вводит код в приложении — `POST /v1/auth/phone/verify`, как для SMS.
+   Код вводится только в приложении: подтверждения входа кнопкой в боте нет, иначе
+   чужая ссылка позволила бы войти в аккаунт жертвы.
 
-## 3. Vision
+Те же лимиты, что у SMS (по номеру; вместо сети — Telegram-аккаунт `tg:<id>`), но в
+суточный бюджет SMS коды Telegram не входят. После входа бот сам привязывает новый
+аккаунт к Telegram (напоминания и оплата работают без отдельной привязки).
+
+Пока SMS не подключён (`SMS_PROVIDER=stub` в production), `POST /v1/auth/phone/code`
+отвечает 503, а удаление аккаунта подтверждается входом не старше 10 минут
+(`{"method": "recent_sign_in"}`).
+
+### SMS
+
+149-ФЗ прямо называет авторизацию по номеру телефона российского оператора:
+149-ФЗ прямо называет этот способ авторизации. Вход через Google и Apple ID удалён
+(штраф по ст. 13.55 КоАП с 7 июля 2026 года). Подробнее —
+[docs/legal/rkn-review.md](docs/legal/rkn-review.md).
+
+```dotenv
+SMS_PROVIDER=smsru
+SMSRU_API_ID=...          # ключ из личного кабинета SMS.ru
+SMS_SENDER=               # согласованное имя отправителя; пусто — по умолчанию
+SMS_DAILY_LIMIT=2000      # потолок SMS в сутки на весь сервис (80% — предупреждение в логе)
+SMS_PER_NETWORK_DAILY=100 # SMS в сутки с одного IPv4 / IPv6 /64
+```
+
+| Эндпоинт | Назначение |
+|---|---|
+| `POST /v1/auth/phone/code` `{"phone": "+79991234567"}` | отправить код; ответ `{"expires_in": 300, "resend_in": 60}` |
+| `POST /v1/auth/phone/verify` `{"phone", "code", "personal_data_consent"}` | обменять код на токены; первый вход создаёт аккаунт |
+| `POST /v1/auth/refresh` `{"refresh_token"}` | новая пара токенов; прежний refresh-токен перестаёт действовать (2 минуты допускается повтор на случай потерянного ответа), повторное использование старого завершает сессию |
+| `POST /v1/auth/logout` (`?everywhere=true`) | завершить сессию этого устройства или все сессии аккаунта |
+| `GET /v1/auth/phone/channels` | способы доставки кода: `{"sms": bool, "telegram_url": str \| null}` |
+| `POST /v1/auth/me/deletion-code` | код подтверждения удаления на номер аккаунта; ответ `{"method": "sms", "phone_masked": "+7 999 ***-**-67", ...}` или `{"method": "recent_sign_in"}` для аккаунта без номера или без SMS |
+| `DELETE /v1/auth/me` `{"code"}` | удалить аккаунт; без верного кода (или без входа не старше 10 минут для аккаунта без номера) — 403 |
+
+Защита: код из 6 цифр, действует 5 минут, 5 попыток; не чаще раза в минуту, 5 кодов
+в час на пару «номер + сеть» и 10 на номер; общий лимит попыток на IP;
+`SMS_PER_NETWORK_DAILY` кодов в сутки с одной сети; суточный потолок SMS. Принимаются только
+номера `+7 9XX`. Коды хранятся в виде HMAC и удаляются через сутки. Если аккаунта
+нет, а согласие не отмечено, ответ 422 и код не расходуется — приложение показывает
+отметку согласия и повторяет запрос.
+
+`SMS_PROVIDER=stub` (разработка) пишет код в лог; в production отклоняется.
+
+Вход через VK ID — отложен: в приложении кнопка неактивна с подписью «Будет
+доступно позже», backend без `VK_CLIENT_ID` отклоняет вход через VK. Включение:
+
+```dotenv
+VK_CLIENT_ID=...
+```
+
+Сборка приложения: `VK_ENABLED=true`, `VK_CLIENT_ID`, `VK_REDIRECT_URL` в
+`config/production.json`. Кнопка VK ID активна, только если заданы оба первых. Первый вход через VK требует
+согласия (`personal_data_consent: true`). Аккаунт привязывается к существующему
+только по email, подтверждённому VK.
+
+**VK: требуется проверка на устройстве.** Backend проверяет токен через VK ID
+`POST /oauth2/user_info` с `client_id`. Клиент получает токен через AppAuth; VK ID
+при обмене кода дополнительно ожидает `device_id` и `state`, которые AppAuth не
+передаёт. Перед включением VK в production проверьте вход на телефоне; при ошибке
+обмена кода клиентскую часть нужно перевести на VK ID SDK.
+
+Токены `test:<id>` работают только при `ENV=local` или `staging`.
+
+## 3. Распознавание фото
 
 Gemini:
 
@@ -58,20 +216,29 @@ VISION_PROVIDER=gemini
 GEMINI_API_KEY=...
 ```
 
-OpenAI-compatible gateway:
+OpenAI-совместимый API:
 
 ```dotenv
 VISION_PROVIDER=openai_compatible
 VISION_API_KEY=...
 VISION_BASE_URL=https://api.openai.com/v1
 VISION_MODEL=gpt-4o-mini
+OPENAI_PROXY_URL=        # socks5://user:pass@host:1080 — прокси за рубежом для AI
 ```
 
-Endpoint `POST /v1/vision/recognize` принимает multipart image. Ответ всегда требует
-подтверждения; клиент отправляет исправленный набор на
-`POST /v1/vision/{recognition_id}/confirm`.
+`OPENAI_PROXY_URL` используется только для запросов к AI-провайдерам (консультант,
+распознавание, Gemini, фото рецептов), остальной трафик идёт напрямую. Временный сбой
+(нет связи, 429, 5xx) повторяется один раз; постоянная ошибка (неверный ключ, нет
+средств, неизвестная модель) пишется в лог с кодом провайдера (`insufficient_quota`,
+`model_not_found`…). Для новых моделей OpenAI запрос сам переходит на
+`max_completion_tokens` и температуру по умолчанию. Ответ модели проверяется: только
+продукты каталога, вес от 1 до 3000 г.
 
-## 4. AI-консультация
+`POST /v1/vision/recognize` — фото до 8 МБ; результат всегда подтверждает
+пользователь (`POST /v1/vision/{id}/confirm`). Ошибки провайдера пишутся в лог, а
+пользователь получает «временно недоступно».
+
+## 4. AI-консультант (тариф PRO)
 
 ```dotenv
 ASSISTANT_PROVIDER=openai_compatible
@@ -80,22 +247,31 @@ ASSISTANT_BASE_URL=https://api.openai.com/v1
 ASSISTANT_MODEL=gpt-4o-mini
 ```
 
-`POST /v1/assistant/chat` принимает `message` и опциональный
-`conversation_id`. В prompt автоматически передаются профиль, текущие цели и
-последние записи дневника. Free/base получают 402, pro — 200 сообщений в месяц.
+В запрос передаются анкета, нормы и последние записи дневника, без имени и email.
+Free/BASE получают 402, PRO — 200 сообщений в месяц.
 
-## 5. Retail offers
-
-До партнёрского API работает безопасный `curated_estimate`. Он возвращает
-расчётную стоимость из внутреннего каталога с `price_type=estimate`,
-`available=null` и подписью «Расчёт по каталогу». Эти значения нельзя показывать
-как цены или наличие конкретной сети:
+## 5. Фотографии блюд
 
 ```dotenv
-RETAIL_PROVIDER=stub
+RECIPE_IMAGE_PROVIDER=openai_compatible
+RECIPE_IMAGE_API_KEY=...
+RECIPE_IMAGE_BASE_URL=https://api.openai.com/v1
+RECIPE_IMAGE_MODEL=gpt-image-2
 ```
 
-Для внутреннего агрегатора:
+Задача запускается ежедневно в 05:00 МСК и создаёт картинку один раз на рецепт.
+Ручной запуск:
+
+```bash
+docker compose run --rm --entrypoint python backend -m app.jobs.recipe_images
+```
+
+## 6. Цены магазинов
+
+По умолчанию (`RETAIL_PROVIDER=stub`) список покупок показывает расчётную стоимость
+по каталогу с пометкой «Расчёт по каталогу», без заявлений о наличии.
+
+Собственный агрегатор:
 
 ```dotenv
 RETAIL_PROVIDER=http
@@ -104,7 +280,7 @@ RETAIL_API_KEY=...
 ```
 
 Backend отправляет `POST {RETAIL_BASE_URL}/offers` с `region_code`, `currency` и
-массивом товаров shopping list. Ожидаемый ответ:
+товарами списка покупок. Ожидаемый ответ:
 
 ```json
 {
@@ -124,16 +300,7 @@ Backend отправляет `POST {RETAIL_BASE_URL}/offers` с `region_code`, `
 }
 ```
 
-Для HTTP-провайдера backend сам выставляет `price_type=retailer`. `url`,
-`package_size_g` и `observed_at` настоятельно рекомендуется заполнять: без веса и
-момента наблюдения цену нельзя корректно сравнивать или проверять. Если `name` не
-пришёл, backend подставит русское название из shopping list.
-
-## Production checklist
-
-- выставить `ENV=production`, `DEBUG=false`, настоящий `SECRET_KEY`;
-- ограничить `CORS_ORIGINS` на уровне deployment вместо wildcard в debug;
-- добавить rate limiting/WAF перед auth, vision и webhook маршрутами;
-- проверить 152-ФЗ/согласия на обработку health data;
-- настроить TLS, резервные копии PostgreSQL и мониторинг provider errors;
-- выполнить `alembic upgrade head` и `python -m app.seed.run` перед первым запуском.
+Пятёрочка через управляемый адаптер: `RETAIL_PROVIDER=parse_bot`,
+`RETAIL_PARSE_API_KEY`, `RETAIL_PARSE_5KA_SCRAPER_ID`, `RETAIL_PARSE_5KA_STORE_ID`
+(обязателен: наличие относится к конкретному магазину). Backend не обходит CAPTCHA
+и защиту сайтов.

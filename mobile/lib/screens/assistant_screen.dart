@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/api_client.dart';
+import '../core/legal.dart';
 import '../core/theme.dart';
 
 class AssistantScreen extends StatefulWidget {
@@ -26,6 +27,17 @@ class _AssistantScreenState extends State<AssistantScreen> {
     super.dispose();
   }
 
+  /// Sends the question; on the first use asks for the separate consent to pass
+  /// data to the AI provider (152-FZ art. 10, 12) and retries once.
+  Future<Map<String, dynamic>> _ask(String text) => withConsent(
+    context,
+    widget.api,
+    () => widget.api.post('/v1/assistant/chat', {
+      'conversation_id': conversationId,
+      'message': text,
+    }),
+  );
+
   Future<void> _send() async {
     final text = input.text.trim();
     if (text.isEmpty || sending) return;
@@ -35,10 +47,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       messages.add({'role': 'user', 'content': text});
     });
     try {
-      final response = await widget.api.post('/v1/assistant/chat', {
-        'conversation_id': conversationId,
-        'message': text,
-      });
+      final response = await _ask(text);
       conversationId = response['conversation_id'].toString();
       final answer = Map<String, dynamic>.from(response['message'] as Map);
       messages.add({
@@ -49,7 +58,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       messages.add({
         'role': 'system',
         'content': exception.statusCode == 402
-            ? 'AI-консультация доступна на тарифе Pro. Оформить его можно в профиле.'
+            ? 'AI-консультант доступен на тарифе PRO. Оформить его можно в профиле.'
             : exception.message,
       });
     } finally {

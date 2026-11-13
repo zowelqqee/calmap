@@ -1,0 +1,58 @@
+# Certificates through the DNS of REG.RU instead of HTTP validation.
+#
+# Use it when Let's Encrypt cannot reach the server from abroad (Caddy logs
+# "Timeout after connect"). Enable by adding to .env:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.dns-certs.yml
+#   REGRU_USERNAME=<REG.RU login>          (both empty: manual mode)
+#   REGRU_PASSWORD=<REG.RU API password>
+#
+# then `docker compose --profile https up -d`. See RELEASE.md.
+services:
+  certs:
+    image: goacme/lego:v4.21.0
+    restart: unless-stopped
+    profiles: ["https"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["/bin/sh", "/certs.sh"]
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      LEGO_EMAIL: ${LEGAL_CONTACT_EMAIL:?set LEGAL_CONTACT_EMAIL in .env}
+      # Not LEGO_SERVER: lego reads that name itself, and an empty value breaks it.
+      ACME_SERVER: ${ACME_SERVER:-}
+      # Empty: manual mode, the TXT record is added by hand (RELEASE.md).
+      REGRU_USERNAME: ${REGRU_USERNAME:-}
+      REGRU_PASSWORD: ${REGRU_PASSWORD:-}
+      # REG.RU applies DNS changes in minutes, not seconds.
+      REGRU_PROPAGATION_TIMEOUT: "1800"
+      REGRU_POLLING_INTERVAL: "30"
+    volumes:
+      - ./docker/certs.sh:/certs.sh:ro
+      - certs_data:/certs
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /certs/certificates/$${DOMAIN}.crt"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 3600s
+    networks: [internal]
+
+  caddy:
+    entrypoint: ["/bin/sh", "/caddy-run.sh"]
+    volumes:
+      - ./docker/tls.d:/etc/caddy/tls.d:ro
+      - ./docker/caddy-run.sh:/caddy-run.sh:ro
+      - certs_data:/certs:ro
+    depends_on:
+      backend:
+        condition: service_started
+      certs:
+        condition: service_healthy
+
+volumes:
+  certs_data:

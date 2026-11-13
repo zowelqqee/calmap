@@ -1,74 +1,149 @@
 from __future__ import annotations
 
-import uuid
+import logging
+from datetime import datetime, timezone
 
 import jwt
-from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
+from sqlalchemy import delete, select
 
-from app.api.deps import CurrentSubscription, CurrentUser, DbSession
+from app.api.deps import CurrentAccess, CurrentClaims, CurrentUser, DbSession
 from app.core.config import settings
-from app.core.security import (
-    create_access_token,
-    create_refresh_token,
-    decode_token,
-    hash_password,
-    verify_password,
+from app.core.rate_limit import limit_auth
+from app.core.security import decode_token
+from app.db.models import AccountDeletion, OAuthIdentity, PhoneCode, User
+from app.services.auth_sessions import (
+    SessionRejected,
+    revoke,
+    revoke_all,
+    rotate,
+    start_session,
+    started_recently,
 )
-from app.db.models import OAuthIdentity, Subscription, User
 from app.services.oauth import OAuthVerificationError, verify_oauth_token
+from app.services.consent import record_consent
+from app.services.phone_auth import (
+    PhoneAuthError,
+    check_code,
+    ensure_review_code,
+    is_review_phone,
+    issue_code,
+    normalize_phone,
+)
+from app.services.sms import SmsError
+from app.services.subscription import new_subscription
 from app.schemas.auth import (
-    LoginRequest,
+    AccountDeletionRequest,
+    DeletionCodeOut,
     OAuthRequest,
+    PhoneChannelsOut,
+    PhoneCodeOut,
+    PhoneCodeRequest,
+    PhoneVerifyRequest,
+    ProfileUpdate,
     RefreshRequest,
-    RegisterRequest,
     TokenPair,
     UserOut,
-    ProfileUpdate,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
+rate_limited = [Depends(limit_auth)]
 
-SUPPORTED_PROVIDERS = {"apple", "google", "vk"}
+DESTROYED_CATEGORIES = [
+    "учётные данные (номер телефона, коды входа)",
+    "анкета (пол, возраст, рост, вес, цели, аллергии, тип питания, бюджет)",
+    "нормы питания",
+    "рационы",
+    "дневник питания",
+    "результаты распознавания фото",
+    "тренировки",
+    "прогресс веса и замеров",
+    "сообщения AI-консультанту",
+    "статус подписки и события оплаты",
+    "привязка к Telegram",
+    "журнал согласий",
+]
+
+# Sign-in only by methods 149-FZ permits: a Russian phone number (SMS code) or a
+# Russian information system (VK ID). Google/Apple ID sign-in is fined under
+# art. 13.55 of the Administrative Code since 7 July 2026.
+SUPPORTED_PROVIDERS = {"vk"}
+
+CONSENT_REQUIRED = "personal data consent is required"
+#: Accounts without a phone number confirm deletion by a fresh sign-in.
+RECENT_SIGN_IN_MINUTES = 10
 
 
-def _tokens(user_id: uuid.UUID) -> TokenPair:
-    return TokenPair(
-        access_token=create_access_token(user_id), refresh_token=create_refresh_token(user_id)
-    )
+
+@router.get("/phone/channels", response_model=PhoneChannelsOut)
+async def phone_channels() -> PhoneChannelsOut:
+    """How the app can get a sign-in code: by SMS and/or from the Telegram bot."""
+    return PhoneChannelsOut(sms=settings.sms_enabled, telegram_url=settings.telegram_login_url)
 
 
-@router.post("/register", response_model=TokenPair, status_code=status.HTTP_201_CREATED)
-async def register(payload: RegisterRequest, session: DbSession) -> TokenPair:
-    existing = await session.scalar(select(User).where(User.email == payload.email.lower()))
-    if existing is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "email already registered")
+@router.post("/phone/code", response_model=PhoneCodeOut, dependencies=rate_limited)
+async def send_phone_code(
+    payload: PhoneCodeRequest, request: Request, session: DbSession
+) -> PhoneCodeOut:
+    """Send a sign-in code by SMS to a Russian mobile number."""
+    if not settings.sms_enabled:
+        raise HTTPException(503, "sms is not available")
+    phone = normalize_phone(payload.phone)
+    if phone is None:
+        raise HTTPException(422, "phone must be a Russian mobile number")
+    ip = request.client.host if request.client else None
+    try:
+        issued = await issue_code(session, phone, ip)
+    except PhoneAuthError as exc:
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+        raise HTTPException(exc.status, str(exc), headers=headers) from None
+    except SmsError:
+        logger.exception("SMS delivery failed")
+        raise HTTPException(503, "sms delivery failed") from None
+    # Commit before answering: the code must exist even if the client is fast.
+    await session.commit()
+    return PhoneCodeOut(expires_in=issued.expires_in, resend_in=issued.resend_in)
 
-    user = User(
-        email=payload.email.lower(),
-        password_hash=hash_password(payload.password),
-        region_code=settings.default_region_code,
-    )
-    session.add(user)
+
+@router.post("/phone/verify", response_model=TokenPair, dependencies=rate_limited)
+async def verify_phone_code(
+    payload: PhoneVerifyRequest, request: Request, session: DbSession
+) -> TokenPair:
+    """Exchange the code (SMS or Telegram bot) for tokens. The first sign-in creates the account and
+    needs the separate personal-data consent; the code is not spent until then."""
+    phone = normalize_phone(payload.phone)
+    if phone is None:
+        raise HTTPException(422, "phone must be a Russian mobile number")
+    try:
+        if is_review_phone(phone):
+            await ensure_review_code(session, phone, request.client.host if request.client else None)
+        code_row = await check_code(session, phone, payload.code)
+    except PhoneAuthError as exc:
+        # Count the failed attempt even though the request fails.
+        await session.commit()
+        raise HTTPException(exc.status, str(exc)) from None
+
+    user = await session.scalar(select(User).where(User.phone == phone))
+    if user is None:
+        if not payload.personal_data_consent:
+            raise HTTPException(422, CONSENT_REQUIRED)
+        user = User(phone=phone, region_code=settings.default_region_code)
+        session.add(user)
+        await session.flush()
+        session.add(new_subscription(user.id))
+        await record_consent(session, user.id, "personal_data", request)
+    elif not user.is_active:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
+    code_row.consumed_at = datetime.now(timezone.utc)
     await session.flush()
-    session.add(Subscription(user_id=user.id, tier="free"))
-    await session.flush()
-    return _tokens(user.id)
+    return await start_session(session, user.id)
 
 
-@router.post("/login", response_model=TokenPair)
-async def login(payload: LoginRequest, session: DbSession) -> TokenPair:
-    user = await session.scalar(select(User).where(User.email == payload.email.lower()))
-    # Same error for unknown email and wrong password: never leak which addresses exist.
-    if user is None or not user.password_hash or not verify_password(
-        payload.password, user.password_hash
-    ):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
-    return _tokens(user.id)
-
-
-@router.post("/oauth/{provider}", response_model=TokenPair)
-async def oauth(provider: str, payload: OAuthRequest, session: DbSession) -> TokenPair:
+@router.post("/oauth/{provider}", response_model=TokenPair, dependencies=rate_limited)
+async def oauth(
+    provider: str, payload: OAuthRequest, request: Request, session: DbSession
+) -> TokenPair:
     if provider not in SUPPORTED_PROVIDERS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "unsupported provider")
 
@@ -76,7 +151,10 @@ async def oauth(provider: str, payload: OAuthRequest, session: DbSession) -> Tok
         subject, provider_email = await verify_oauth_token(provider, payload.id_token)
     except OAuthVerificationError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from None
-    email = (payload.email or provider_email or "").lower() or None
+    # Only a provider-verified address may link to an existing account. The optional
+    # client-supplied `email` is ignored: trusting it would let anyone with a valid
+    # token for their own account sign in to someone else's.
+    email = (provider_email or "").lower() or None
 
     identity = await session.scalar(
         select(OAuthIdentity).where(
@@ -84,47 +162,64 @@ async def oauth(provider: str, payload: OAuthRequest, session: DbSession) -> Tok
         )
     )
     if identity is not None:
-        return _tokens(identity.user_id)
+        return await start_session(session, identity.user_id)
 
     user = None
     if email:
         user = await session.scalar(select(User).where(User.email == email))
     if user is None:
+        if not payload.personal_data_consent:
+            raise HTTPException(422, CONSENT_REQUIRED)
         user = User(email=email, region_code=settings.default_region_code)
         session.add(user)
         await session.flush()
-        session.add(Subscription(user_id=user.id, tier="free"))
+        session.add(new_subscription(user.id))
+        await record_consent(session, user.id, "personal_data", request)
 
     session.add(
         OAuthIdentity(user_id=user.id, provider=provider, subject=subject, email=email)
     )
     await session.flush()
-    return _tokens(user.id)
+    return await start_session(session, user.id)
 
 
-@router.post("/refresh", response_model=TokenPair)
+@router.post("/refresh", response_model=TokenPair, dependencies=rate_limited)
 async def refresh(payload: RefreshRequest, session: DbSession) -> TokenPair:
     try:
-        subject = decode_token(payload.refresh_token, "refresh")
-    except jwt.InvalidTokenError:
+        claims = decode_token(payload.refresh_token, "refresh")
+    except (jwt.InvalidTokenError, ValueError):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid refresh token") from None
 
-    user = await session.get(User, uuid.UUID(subject))
+    user = await session.get(User, claims.user_id)
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
-    return _tokens(user.id)
+    try:
+        return await rotate(session, claims)
+    except SessionRejected:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid refresh token") from None
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(claims: CurrentClaims, session: DbSession, everywhere: bool = False) -> Response:
+    """End this device's session, or every session of the account (`?everywhere=true`)."""
+    if everywhere:
+        await revoke_all(session, claims.user_id)
+    else:
+        await revoke(session, claims.session_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/me", response_model=UserOut)
-async def me(user: CurrentUser, subscription: CurrentSubscription) -> UserOut:
+async def me(user: CurrentUser, access: CurrentAccess) -> UserOut:
     return UserOut(
         id=user.id,
         email=user.email,
+        phone=user.phone,
         name=user.name,
         avatar_url=user.avatar_url,
         region_code=user.region_code,
         onboarding_completed=user.onboarding_completed_at is not None,
-        tier=subscription.tier,
+        tier=access.tier if access.has_access else None,
     )
 
 
@@ -132,7 +227,7 @@ async def me(user: CurrentUser, subscription: CurrentSubscription) -> UserOut:
 async def update_me(
     payload: ProfileUpdate,
     user: CurrentUser,
-    subscription: CurrentSubscription,
+    access: CurrentAccess,
     session: DbSession,
 ) -> UserOut:
     for key, value in payload.model_dump(exclude_unset=True).items():
@@ -141,9 +236,94 @@ async def update_me(
     return UserOut(
         id=user.id,
         email=user.email,
+        phone=user.phone,
         name=user.name,
         avatar_url=user.avatar_url,
         region_code=user.region_code,
         onboarding_completed=user.onboarding_completed_at is not None,
-        tier=subscription.tier,
+        tier=access.tier if access.has_access else None,
     )
+
+
+def _mask(phone: str) -> str:
+    """79991234567 → +7 999 ***-**-67"""
+    return f"+7 {phone[1:4]} ***-**-{phone[-2:]}"
+
+
+@router.post("/me/deletion-code", response_model=DeletionCodeOut, dependencies=rate_limited)
+async def send_deletion_code(
+    user: CurrentUser, request: Request, session: DbSession
+) -> DeletionCodeOut:
+    """Step 1 of account deletion: an SMS code to the account's phone number, so a
+    stolen session alone cannot destroy the account. Without SMS delivery (or a
+    phone number) a sign-in made in the last minutes confirms instead: signing in
+    again needs a fresh code from the bot."""
+    if not user.phone or not settings.sms_enabled:
+        return DeletionCodeOut(method="recent_sign_in")
+    ip = request.client.host if request.client else None
+    try:
+        issued = await issue_code(session, user.phone, ip, purpose="delete_account")
+    except PhoneAuthError as exc:
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else None
+        raise HTTPException(exc.status, str(exc), headers=headers) from None
+    except SmsError:
+        logger.exception("SMS delivery failed")
+        raise HTTPException(503, "sms delivery failed") from None
+    await session.commit()
+    return DeletionCodeOut(
+        method="sms",
+        phone_masked=_mask(user.phone),
+        expires_in=issued.expires_in,
+        resend_in=issued.resend_in,
+    )
+
+
+@router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_me(
+    user: CurrentUser,
+    claims: CurrentClaims,
+    session: DbSession,
+    payload: AccountDeletionRequest | None = Body(default=None),
+) -> Response:
+    """Step 2: permanently delete the account and every record that belongs to it.
+
+    Needs the SMS code from step 1; an account without a phone number (VK ID), or
+    any account while SMS is off, needs a session started in the last
+    RECENT_SIGN_IN_MINUTES minutes instead. Refusals
+    answer 403, never 401: a wrong code must not look like an expired session.
+
+    Required by the App Store and Google Play and by 152-FZ (withdrawal of consent).
+    All user-owned tables reference `users.id` with ON DELETE CASCADE, so one delete
+    removes the profile, diary, plans, progress, recognitions, chats and payments.
+    Outstanding tokens stop working because their subject no longer exists.
+    """
+    if user.phone and settings.sms_enabled:
+        code = payload.code if payload else None
+        if code is None:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "confirmation code required")
+        try:
+            code_row = await check_code(session, user.phone, code, purpose="delete_account")
+        except PhoneAuthError as exc:
+            # Keep the failed attempt even though the request fails.
+            await session.commit()
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from None
+        code_row.consumed_at = datetime.now(timezone.utc)
+    elif not await started_recently(session, claims, RECENT_SIGN_IN_MINUTES):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "recent sign-in required")
+
+    # Destruction record (Roskomnadzor order No. 179): the former account id and
+    # what was destroyed, without contact data.
+    session.add(
+        AccountDeletion(
+            user_ref=user.id,
+            reason="user_request",
+            method="удаление записей из базы данных",
+            categories=DESTROYED_CATEGORIES,
+        )
+    )
+    if user.phone:
+        await session.execute(delete(PhoneCode).where(PhoneCode.phone == user.phone))
+    # A Core delete lets Postgres cascade; the ORM would instead try to null out
+    # the loaded relationships first.
+    await session.execute(delete(User).where(User.id == user.id))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

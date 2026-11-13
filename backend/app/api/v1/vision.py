@@ -1,41 +1,55 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from datetime import date, timedelta
 
 import httpx
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
-from app.api.deps import CurrentSubscription, CurrentUser, DbSession
+from app.api.deps import ActiveAccess, CurrentUser, DbSession
 from app.db.models import DiaryEntry, Product, VisionRecognition
 from app.schemas.tracking import (
     VisionCandidateOut,
     VisionConfirmRequest,
     VisionRecognizeOut,
 )
+from app.services.consent import require_consent
+from app.services.image_metadata import SUPPORTED_TYPES, UnsupportedImage, strip_metadata
 from app.services.vision import CatalogHint, get_vision_provider
 
 router = APIRouter(prefix="/vision", tags=["vision"])
+logger = logging.getLogger(__name__)
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
-ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/heic"}
+# Only types whose metadata (GPS, device) can be cut out before the photo is sent.
+ALLOWED_MIME = SUPPORTED_TYPES
 
 
 @router.post("/recognize", response_model=VisionRecognizeOut)
 async def recognize(
     user: CurrentUser,
-    subscription: CurrentSubscription,
+    access: ActiveAccess,
     session: DbSession,
     image: UploadFile = File(...),
 ) -> VisionRecognizeOut:
+    # The provider may be abroad: a separate consent precedes the first photo.
+    await require_consent(session, user.id, "photo_recognition")
     if image.content_type not in ALLOWED_MIME:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "unsupported image type")
 
-    payload = await image.read()
+    # Read at most one byte past the limit so an oversized upload is never buffered
+    # in full.
+    payload = await image.read(MAX_IMAGE_BYTES + 1)
     if len(payload) > MAX_IMAGE_BYTES:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "image too large")
+    try:
+        # GPS coordinates, device and time from EXIF/XMP never reach the provider.
+        payload = strip_metadata(payload, image.content_type)
+    except UnsupportedImage:
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "unsupported image type") from None
 
     # --- dedupe first: re-sending the same photo costs nothing, so it must not count
     # against the quota either. Checking the quota first would make a flaky upload
@@ -61,7 +75,18 @@ async def recognize(
         )
 
     # --- per-tier quota: this is what keeps vision spend below subscription revenue ---
-    limit = subscription.limits["vision_per_day"]
+    # One recognition per user at a time, so parallel uploads cannot all pass the
+    # count before any of them is recorded. A busy lock answers at once instead of
+    # queueing: each waiter would hold a pooled connection for the provider call.
+    # Released at transaction end.
+    locked = await session.scalar(
+        text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"), {"key": f"vision:{user.id}"}
+    )
+    if not locked:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS, "another photo is being recognised"
+        )
+    limit = access.limits["vision_per_day"]
     used = await session.scalar(
         select(func.count())
         .select_from(VisionRecognition)
@@ -73,7 +98,7 @@ async def recognize(
     if used is not None and used >= limit:
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,
-            f"daily photo limit reached for the '{subscription.tier}' plan ({limit}/day)",
+            f"daily photo limit reached for the '{access.tier}' plan ({limit}/day)",
         )
 
     # Keep the large external food dump out of the vision prompt. The curated
@@ -92,8 +117,12 @@ async def recognize(
     provider = get_vision_provider()
     try:
         result = await provider.recognize(payload, image.content_type, catalog)
-    except (RuntimeError, OSError, httpx.HTTPError) as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from None
+    except (RuntimeError, OSError, httpx.HTTPError):
+        # Provider errors can carry request URLs and headers; log them, never return them.
+        logger.exception("vision provider %s failed", provider.name)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "photo recognition is temporarily unavailable"
+        ) from None
 
     candidates: list[VisionCandidateOut] = []
     for raw in result.candidates:

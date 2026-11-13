@@ -72,3 +72,40 @@ PROMPT_RU = """Ты — ассистент по учёту питания. На 
 def build_prompt(catalog: list[CatalogHint]) -> str:
     lines = "\n".join(f"- {c.slug}: {c.name}" for c in catalog)
     return PROMPT_RU + lines
+
+
+#: An estimate above this is a model error, not a portion.
+MAX_GRAMS = 3000.0
+
+
+def parse_items(items: object, catalog: list[CatalogHint]) -> list[RawCandidate]:
+    """Validated candidates from the model's "items": unknown slugs, malformed
+    entries and absurd weights are dropped or clamped, never raised."""
+    if not isinstance(items, list):
+        return []
+    known = {c.slug for c in catalog}
+    candidates: list[RawCandidate] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("slug") not in known:
+            continue
+        try:
+            grams = min(MAX_GRAMS, max(1.0, float(item.get("grams", 0))))
+            confidence = min(1.0, max(0.0, float(item.get("confidence", 0.5))))
+        except (TypeError, ValueError):
+            continue
+        if grams != grams or confidence != confidence:  # NaN
+            continue
+        alternatives = item.get("alternatives")
+        candidates.append(
+            RawCandidate(
+                slug=item["slug"],
+                grams=grams,
+                confidence=confidence,
+                alternatives=[
+                    a for a in alternatives if isinstance(a, str) and a in known
+                ][:3]
+                if isinstance(alternatives, list)
+                else [],
+            )
+        )
+    return candidates

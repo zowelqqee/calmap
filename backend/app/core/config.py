@@ -1,3 +1,4 @@
+import re
 from functools import lru_cache
 from typing import Literal
 
@@ -8,18 +9,57 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    env: Literal["local", "staging", "production"] = "local"
-    debug: bool = True
+    # Safe defaults: a .env without ENV/DEBUG runs as production (and fails fast on a
+    # weak secret) instead of silently enabling test sign-in, /docs and wildcard CORS.
+    env: Literal["local", "staging", "production"] = "production"
+    debug: bool = False
     secret_key: str = "dev-only-secret-key-do-not-use-in-production"
     cors_origins: str = ""
 
     database_url: str = "postgresql+asyncpg://localhost:5432/calmap"
 
+    # Sign-in by SMS code. stub keeps messages in memory (refused in production);
+    # smsru sends through SMS.ru.
+    sms_provider: Literal["stub", "smsru"] = "stub"
+    smsru_api_id: str = ""
+    sms_sender: str = ""
+    sms_daily_limit: int = 2000
+    phone_code_ttl_seconds: int = 300
+    phone_code_resend_seconds: int = 60
+    phone_code_max_attempts: int = 5
+    phone_codes_per_hour: int = 5
+    #: App Store / Google Play review: one number whose sign-in code is fixed,
+    #: since a reviewer receives neither SMS nor Telegram messages. Codes for it
+    #: are issued on demand with the usual lifetime, attempts and hourly limits.
+    review_phone: str = ""
+    review_code: str = ""
+    #: Codes per day from one IPv4 address or IPv6 /64, across all numbers.
+    #: Mobile carriers put many subscribers behind one IPv4 address (CGNAT), so
+    #: this is a ceiling against pumping, not a per-person limit.
+    sms_per_network_daily: int = 100
+
+    # Per-IP attempts per minute on sign-in endpoints; 0 disables.
+    auth_rate_limit_per_minute: int = 20
+
+    # Public legal pages (/legal/privacy, /legal/terms). The operator details are
+    # required by 152-FZ and by the app stores; they are not invented in code.
+    legal_operator_name: str = ""
+    legal_contact_email: str = ""
+    #: Who processes AI-consultant requests on the operator's behalf and in which
+    #: country (named in the AI consent; a foreign country means cross-border transfer).
+    assistant_processor_name: str = ""
+    assistant_processor_country: str = ""
+    #: Photo recognition processor named in its consent; empty — the same as the
+    #: AI consultant's (one provider for both is the usual setup).
+    vision_processor_name: str = ""
+    vision_processor_country: str = ""
+
+    # /docs and /openapi.json are disabled in production unless explicitly enabled.
+    expose_docs: bool = False
+
     access_token_ttl_minutes: int = 30
     refresh_token_ttl_days: int = 60
 
-    apple_client_id: str = ""
-    google_client_id: str = ""
     vk_client_id: str = ""
 
     vision_provider: Literal["stub", "gemini", "openai_compatible"] = "stub"
@@ -27,6 +67,11 @@ class Settings(BaseSettings):
     vision_api_key: str = ""
     vision_base_url: str = ""
     vision_model: str = "gpt-4o-mini"
+    #: "low": the provider looks at a 512 px copy at a fixed small price (enough to
+    #: tell dishes apart); "high"/"auto" cost several times more per photo.
+    vision_image_detail: Literal["low", "high", "auto"] = "low"
+    #: Upper bound for the JSON answer; a list of products is a few hundred tokens.
+    vision_max_tokens: int = 800
     llm_proxy_base_url: str = ""
 
     # Recipe photos are generated once per unique recipe at the daily 05:00 job.
@@ -39,7 +84,8 @@ class Settings(BaseSettings):
     recipe_image_model: str = "gpt-image-2"
     recipe_image_size: str = "1536x1024"
     recipe_image_quality: Literal["low", "medium", "high", "auto"] = "low"
-    # Shared egress proxy for OpenAI-compatible requests. Keep the old
+    # Egress proxy for AI providers (OpenAI-compatible, Gemini, recipe images):
+    # only those requests use it (app/services/llm_http.py). Keep the old
     # RECIPE_IMAGE_PROXY_URL name as a backwards-compatible alias.
     openai_proxy_url: str = Field(
         default="",
@@ -54,21 +100,35 @@ class Settings(BaseSettings):
     assistant_api_key: str = ""
     assistant_base_url: str = ""
     assistant_model: str = "gpt-4o-mini"
+    #: Upper bound for one answer. Reasoning models (gpt-5 family) spend part of it
+    #: on hidden reasoning, so it is well above the length of a short answer.
+    assistant_max_tokens: int = 1500
+    #: reasoning_effort for reasoning models, e.g. "low"; empty: not sent. Models
+    #: that do not know it get the request again without it.
+    assistant_reasoning_effort: str = ""
 
-    # Billing is provider-agnostic in the application layer. `stub` is useful for
-    # local end-to-end testing; production uses yookassa or cloudpayments.
-    billing_provider: Literal["stub", "yookassa", "cloudpayments"] = "stub"
-    billing_return_url: str = "http://localhost:3000/billing/complete"
-    yookassa_shop_id: str = ""
-    yookassa_secret_key: str = ""
-    cloudpayments_public_id: str = ""
-    cloudpayments_secret: str = ""
-    cloudpayments_checkout_url: str = ""
+    # Subscriptions. Payment happens in a Telegram bot, which pushes the status to
+    # /v1/bot/* authenticated with TELEGRAM_BOT_API_SECRET. The app reads it only;
+    # it opens the bot for sign-in codes, never for payment.
+    trial_days: int = 3
 
-    # OAuth verification. Apple and Google use their public JWKS; VK is verified via
-    # the configured user-info endpoint because VK ID access tokens are not uniform
-    # JWTs across app configurations.
-    oauth_jwks_cache_seconds: int = 3600
+    # App Store subscriptions (In-App Purchase). Purchases arrive as transactions
+    # signed by Apple; their certificate chain must end in one of the Apple root
+    # certificates in this directory (AppleRootCA-G3.cer, RELEASE.md). Without
+    # them App Store purchases are refused.
+    apple_bundle_id: str = "ru.calmap.app"
+    #: The app's Apple ID in App Store Connect; required for production purchases.
+    apple_app_id: int | None = 6832549322
+    apple_root_certs_dir: str = "apple-certs"
+    #: Product ID → tier. Product IDs as created in App Store Connect.
+    apple_product_base: str = "ru.calmap.app.base.month"
+    apple_product_pro: str = "ru.calmap.app.pro.month"
+    telegram_bot_api_secret: str = ""
+    #: The bot's @username without "@". With the bot secret set, the app offers
+    #: sign-in codes from the bot (t.me/<username>?start=login).
+    telegram_bot_username: str = ""
+
+    # VK ID sign-in: tokens are verified by the user-info endpoint with our client_id.
     vk_userinfo_url: str = "https://id.vk.com/oauth2/user_info"
 
     # Optional retailer aggregator. `stub` returns a clearly labelled catalogue
@@ -83,6 +143,10 @@ class Settings(BaseSettings):
     retail_parse_5ka_scraper_id: str = ""
     retail_parse_5ka_store_id: str = ""
 
+    # Calendar days ("today", daily quotas, plan dates) follow this zone for both the
+    # process (TZ) and Postgres sessions.
+    app_timezone: str = "Europe/Moscow"
+
     default_region_code: str = "RU-MOW"
     default_currency: str = "RUB"
 
@@ -94,10 +158,28 @@ class Settings(BaseSettings):
             if (
                 len(self.secret_key) < 32
                 or self.secret_key == "dev-only-secret-key-do-not-use-in-production"
-                or self.secret_key.startswith("replace-with-")
+                or self.secret_key.startswith(("replace-with-", "change-me"))
             ):
                 raise ValueError("SECRET_KEY must contain at least 32 characters in production")
+            if self.review_phone and not re.fullmatch(r"[0-9]{6}", self.review_code):
+                raise ValueError("REVIEW_CODE must be six digits when REVIEW_PHONE is set")
+            if self.telegram_bot_api_secret and len(self.telegram_bot_api_secret) < 32:
+                raise ValueError("TELEGRAM_BOT_API_SECRET must contain at least 32 characters")
         return self
+
+    @property
+    def sms_enabled(self) -> bool:
+        """SMS codes can be delivered: SMS.ru with its key, or the stub outside
+        production (it is refused there)."""
+        if self.sms_provider == "smsru":
+            return bool(self.smsru_api_id)
+        return self.env != "production"
+
+    @property
+    def telegram_login_url(self) -> str | None:
+        if not (self.telegram_bot_username and self.telegram_bot_api_secret):
+            return None
+        return f"https://t.me/{self.telegram_bot_username.lstrip('@')}?start=login"
 
     @property
     def sync_database_url(self) -> str:

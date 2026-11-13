@@ -133,11 +133,6 @@ class _IntroScreenState extends State<IntroScreen> {
                   onPressed: _next,
                   child: Text(page == pages.length - 1 ? 'Начать' : 'Далее'),
                 ),
-                if (page == pages.length - 1)
-                  TextButton(
-                    onPressed: widget.onCompleted,
-                    child: const Text('Уже есть аккаунт? Войти'),
-                  ),
               ],
             ),
           ),

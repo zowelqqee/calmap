@@ -1,0 +1,7 @@
+# The same API under the fallback domain, reached through the server abroad.
+# TLS ends here, in Russia: the server abroad passes encrypted bytes through.
+# Caddy obtains this certificate itself: Let's Encrypt reaches the domain on the
+# server abroad, which forwards ports 80 and 443 here through the tunnel.
+{$FALLBACK_DOMAIN}:8443 {
+	import calmap_api
+}

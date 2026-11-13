@@ -1,0 +1,38 @@
+# Fallback address of the API through the server abroad.
+#
+# Part of the networks abroad cannot reach this server over HTTPS (users whose
+# VPN sends everything abroad). The app switches to FALLBACK_DOMAIN when the
+# main address does not answer. Needs the egress tunnel key and server abroad
+# (docker-compose.egress.yml). Enable in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.dns-certs.yml:docker-compose.egress.yml:docker-compose.fallback.yml
+#   FALLBACK_DOMAIN=api2.calmap.ru
+# See RELEASE.md, «Запасной адрес API».
+services:
+  edge:
+    build: ./docker/egress
+    restart: unless-stopped
+    # Leads to Caddy, which runs in the https profile only.
+    profiles: ["https"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["/bin/sh", "/edge.sh"]
+    environment:
+      EGRESS_HOST: ${EGRESS_HOST:?set EGRESS_HOST in .env}
+      EGRESS_USER: ${EGRESS_USER:-tunnel}
+    volumes:
+      - ./docker/egress/id_ed25519:/egress_key:ro
+      - egress_state:/state
+    depends_on:
+      - caddy
+    networks: [internal]
+
+  caddy:
+    environment:
+      FALLBACK_DOMAIN: ${FALLBACK_DOMAIN:?set FALLBACK_DOMAIN in .env}
+    volumes:
+      - ./docker/fallback/global.caddy:/etc/caddy/global.d/fallback.caddy:ro
+      - ./docker/fallback/site.caddy:/etc/caddy/sites.d/fallback.caddy:ro

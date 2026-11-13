@@ -23,8 +23,15 @@ PORTION_CEILING_G = 600.0
 
 
 async def seed_products(session: AsyncSession) -> dict[str, Product]:
+    # Only the curated slugs: the Open Food Facts import can hold tens of thousands
+    # of rows that the seed never touches.
     existing = {
-        p.slug: p for p in (await session.scalars(select(Product))).all()
+        p.slug: p
+        for p in (
+            await session.scalars(
+                select(Product).where(Product.slug.in_([row["slug"] for row in PRODUCTS]))
+            )
+        ).all()
     }
     out: dict[str, Product] = {}
     for row in PRODUCTS:
@@ -111,7 +118,10 @@ async def seed_recipes(session: AsyncSession, products: dict[str, Product]) -> N
         recipe.meal_types = row["meal_types"]
         recipe.prep_minutes = row.get("prep_minutes", 15)
         recipe.difficulty = "easy" if recipe.prep_minutes <= 15 else "medium"
-        recipe.image_url = row.get("image_url")
+        # Generated photos are written by the image job; re-seeding on every container
+        # start must not erase them.
+        if row.get("image_url"):
+            recipe.image_url = row["image_url"]
         recipe.instructions = row.get("instructions") or [
             "Подготовьте и взвесьте все ингредиенты.",
             "Приготовьте ингредиенты до готовности удобным способом.",

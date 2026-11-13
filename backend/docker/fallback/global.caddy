@@ -1,0 +1,13 @@
+# Listener of the fallback address. Connections come from the edge container
+# (docker/egress/edge.sh), which carries them from the server abroad; HAProxy
+# there prefixes each one with a PROXY protocol header, so Caddy, the access log
+# and the backend's rate limits see the user's address, not the tunnel's.
+servers :8443 {
+	listener_wrappers {
+		proxy_protocol {
+			timeout 5s
+			allow 172.28.0.0/24
+		}
+		tls
+	}
+}

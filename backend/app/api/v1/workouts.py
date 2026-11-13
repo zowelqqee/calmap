@@ -8,7 +8,6 @@ from sqlalchemy import delete, select
 
 from app.api.deps import CurrentProfile, CurrentUser, DbSession
 from app.db.models import Workout, WorkoutExercise
-from app.domain.enums import WorkoutLocation
 from app.domain.exercises import EQUIPMENT_TYPES, EXERCISE_BY_ID, MUSCLE_GROUPS
 from app.schemas.wellness import (
     ExerciseOut, ExerciseUpdate, WorkoutCalendarDayOut, WorkoutOut,
@@ -76,7 +75,7 @@ async def update_workout_preferences(
     unknown_muscles = set(payload.focus_muscles) - set(MUSCLE_GROUPS)
     if unknown_equipment or unknown_muscles:
         invalid = sorted(unknown_equipment | unknown_muscles)
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"unknown workout preferences: {invalid}")
+        raise HTTPException(422, f"unknown workout preferences: {invalid}")
     profile.workout_equipment = sorted(set(payload.equipment))
     profile.workout_focus_muscles = sorted(set(payload.focus_muscles))
     if payload.rebuild_planned:
@@ -94,11 +93,22 @@ async def update_workout_preferences(
     )
 
 
+#: Workouts are generated on request; a window keeps storage bounded.
+WORKOUT_WINDOW_DAYS = 400
+
+
+def _within_window(first: date, last: date) -> None:
+    today = date.today()
+    if (today - first).days > WORKOUT_WINDOW_DAYS or (last - today).days > WORKOUT_WINDOW_DAYS:
+        raise HTTPException(422, f"dates are limited to {WORKOUT_WINDOW_DAYS} days from today")
+
+
 @router.get("/today", response_model=WorkoutOut | None)
 async def today_workout(
     user: CurrentUser, profile: CurrentProfile, session: DbSession, day: date | None = None
 ) -> WorkoutOut | None:
     requested = day or date.today()
+    _within_window(requested, requested)
     await ensure_workouts(session, user.id, profile, requested, requested)
     workout = await session.scalar(
         select(Workout).where(Workout.user_id == user.id, Workout.day == requested)
@@ -112,7 +122,8 @@ async def workout_calendar(
     profile: CurrentProfile, session: DbSession,
 ) -> list[WorkoutCalendarDayOut]:
     if (date_to - date_from).days > 62:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "range is limited to 63 days")
+        raise HTTPException(422, "range is limited to 63 days")
+    _within_window(date_from, date_to)
     await ensure_workouts(session, user.id, profile, date_from, date_to)
     rows = (await session.scalars(
         select(Workout).where(

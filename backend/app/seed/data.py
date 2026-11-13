@@ -78,7 +78,7 @@ PRODUCTS: list[ProductSeed] = [
     {"slug": "olive_oil", "name": "Масло оливковое", "category": "fats", "kcal": 898, "protein": 0.0, "fat": 99.8, "carbs": 0.0, "price_per_kg": 900},
     {"slug": "butter_82", "name": "Масло сливочное 82,5%", "category": "fats", "kcal": 748, "protein": 0.5, "fat": 82.5, "carbs": 0.8, "price_per_kg": 1100, "tags": ["dairy"], "allergens": ["lactose"]},
     {"slug": "walnuts", "name": "Грецкий орех", "category": "nuts", "kcal": 654, "protein": 15.0, "fat": 65.0, "carbs": 7.0, "fiber": 6.7, "price_per_kg": 1200, "allergens": ["nuts"]},
-    {"slug": "peanut_butter", "name": "Арахисовая паста", "category": "nuts", "kcal": 588, "protein": 25.0, "fat": 50.0, "carbs": 20.0, "price_per_kg": 700, "allergens": ["nuts"]},
+    {"slug": "peanut_butter", "name": "Арахисовая паста", "category": "nuts", "kcal": 588, "protein": 25.0, "fat": 50.0, "carbs": 20.0, "price_per_kg": 700, "allergens": ["nuts", "peanut"]},
     {"slug": "honey", "name": "Мёд", "category": "sweeteners", "kcal": 329, "protein": 0.8, "fat": 0.0, "carbs": 81.0, "price_per_kg": 800, "tags": ["honey"]},
     # --- expanded athlete-friendly staples ---
     {"slug": "chicken_liver", "name": "Печень куриная", "category": "meat", "kcal": 136, "protein": 20.4, "fat": 5.9, "carbs": 0.7, "price_per_kg": 260, "tags": ["poultry"]},

@@ -40,9 +40,15 @@ async def current_prices_per_kg(
 
 
 async def load_recipe_candidates(
-    session: AsyncSession, region_code: str, on: date | None = None
+    session: AsyncSession,
+    region_code: str,
+    on: date | None = None,
+    excluded_product_ids: frozenset[str] = frozenset(),
 ) -> list[RecipeCandidate]:
-    """Build the solver's catalogue, costing every dish from current regional prices."""
+    """Build the solver's catalogue, costing every dish from current regional prices.
+
+    Dishes containing any product the user excluded in the questionnaire are dropped.
+    """
     prices = await current_prices_per_kg(session, region_code, on)
     recipes = (
         await session.scalars(select(Recipe).where(Recipe.is_active.is_(True)))
@@ -51,6 +57,10 @@ async def load_recipe_candidates(
     candidates: list[RecipeCandidate] = []
     for recipe in recipes:
         if not recipe.items or recipe.base_grams <= 0:
+            continue
+        if excluded_product_ids and any(
+            str(item.product_id) in excluded_product_ids for item in recipe.items
+        ):
             continue
 
         cost_of_base_portion = 0.0

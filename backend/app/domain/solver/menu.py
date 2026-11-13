@@ -87,20 +87,24 @@ def _score(plan: DayPlan, usage: Counter[str]) -> float:
 
 
 def _can_assign_distinct(choice_sets: list[list[RecipeCandidate]]) -> bool:
-    """Whether every slot can receive a different recipe from its fresh choices."""
-    if not choice_sets:
-        return True
-    ordered = sorted(choice_sets, key=len)
+    """Whether every slot can receive a different recipe from its fresh choices.
 
-    def visit(position: int, taken: set[str]) -> bool:
-        if position == len(ordered):
-            return True
-        for recipe in ordered[position]:
-            if recipe.id not in taken and visit(position + 1, taken | {recipe.id}):
+    Bipartite matching by augmenting paths (Kuhn): polynomial in slots × recipes,
+    unlike trying every combination, which explodes when recipes run short.
+    """
+    owner: dict[str, int] = {}
+
+    def assign(slot: int, seen: set[str]) -> bool:
+        for recipe in choice_sets[slot]:
+            if recipe.id in seen:
+                continue
+            seen.add(recipe.id)
+            if recipe.id not in owner or assign(owner[recipe.id], seen):
+                owner[recipe.id] = slot
                 return True
         return False
 
-    return visit(0, set())
+    return all(assign(slot, set()) for slot in range(len(choice_sets)))
 
 
 def build_day(

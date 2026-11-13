@@ -1,0 +1,53 @@
+# Egress for AI providers through an SSH tunnel to a server abroad.
+#
+# Enable in .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.dns-certs.yml:docker-compose.egress.yml
+#   EGRESS_HOST=<IP of the server abroad>
+#   OPENAI_PROXY_URL=socks5://egress:1080
+# and put the tunnel's private key at docker/egress/id_ed25519 (RELEASE.md,
+# "Прокси для OpenAI через SSH").
+services:
+  egress:
+    build: ./docker/egress
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      EGRESS_HOST: ${EGRESS_HOST:?set EGRESS_HOST in .env}
+      EGRESS_USER: ${EGRESS_USER:-tunnel}
+    volumes:
+      - ./docker/egress/id_ed25519:/egress_key:ro
+      - egress_state:/state
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 1080"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [internal]
+
+  # SSH to this server from abroad through the server abroad (relay.sh).
+  relay:
+    build: ./docker/egress
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt: ["no-new-privileges:true"]
+    entrypoint: ["/bin/sh", "/relay.sh"]
+    environment:
+      EGRESS_HOST: ${EGRESS_HOST:?set EGRESS_HOST in .env}
+      EGRESS_USER: ${EGRESS_USER:-tunnel}
+      RELAY_PORT: ${RELAY_PORT:-2222}
+    volumes:
+      - ./docker/egress/id_ed25519:/egress_key:ro
+      - egress_state:/state
+    networks: [internal]
+
+volumes:
+  egress_state:

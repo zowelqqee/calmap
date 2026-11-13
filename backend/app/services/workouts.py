@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import UserProfile, Workout, WorkoutExercise
@@ -140,6 +140,11 @@ async def ensure_workouts(
     date_from: date,
     date_to: date,
 ) -> None:
+    # Two parallel reads (e.g. /today and /calendar on app start) would otherwise both
+    # insert the same day and one would fail on the unique constraint.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"workouts:{user_id}"}
+    )
     existing_days = set(
         (await session.scalars(
             select(Workout.day).where(

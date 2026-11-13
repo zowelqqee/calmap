@@ -747,7 +747,9 @@ class _WorkoutExecutionScreenState extends State<WorkoutExecutionScreen> {
     try {
       workout = await widget.api.post('/v1/workouts/${workout['id']}/start');
       if (mounted) setState(() {});
-    } catch (_) {}
+    } on ApiException {
+      // Starting only records the start time; the workout itself works offline.
+    }
   }
 
   @override
@@ -804,6 +806,12 @@ class _WorkoutExecutionScreenState extends State<WorkoutExecutionScreen> {
               _WorkoutCompleteScreen(workout: result, elapsed: elapsed),
         ),
       );
+    } on ApiException catch (exception) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(exception.message)));
+      }
     } finally {
       if (mounted) setState(() => busy = false);
     }

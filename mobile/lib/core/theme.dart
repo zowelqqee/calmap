@@ -360,3 +360,22 @@ class AccentIconTile extends StatelessWidget {
     ),
   );
 }
+
+/// Full-screen route for tab-style screens (profile, diary, assistant) that are
+/// built without their own Scaffold: adds the Material surface and a back button.
+class SubPage extends StatelessWidget {
+  const SubPage({required this.child, super.key});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      toolbarHeight: 44,
+    ),
+    body: child,
+  );
+}

@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date
 from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import selectinload
+from starlette.concurrency import run_in_threadpool
 
-from app.api.deps import CurrentProfile, CurrentUser, DbSession, NutritionSubscription
-from app.db.models import MealPlan, MealPlanDay, MealPlanItem, ProgressEntry, Recipe
+from app.api.deps import ActiveAccess, CurrentProfile, CurrentUser, DbSession
+from app.api.v1.diary import _out as diary_entry_out
+from app.db.models import (
+    DiaryEntry,
+    MealPlan,
+    MealPlanDay,
+    MealPlanItem,
+    ProgressEntry,
+    Recipe,
+)
+from app.domain.allergens import catalogue_exclusions
 from app.domain.enums import MealType
 from app.domain.solver import DayTargets, MenuRequest, build_day
 from app.services.catalog import load_recipe_candidates
@@ -24,9 +35,11 @@ from app.schemas.plan import (
     ShoppingListOut,
 )
 from app.schemas.retail import RetailOfferOut, ShoppingOffersOut
+from app.schemas.tracking import DiaryEntryOut
 from app.services.retail import get_retail_provider
 from app.services.planning import current_targets, generate_meal_plan, shopping_list
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/meal-plans", tags=["meal-plans"])
 
 
@@ -42,6 +55,7 @@ async def _serialize(session: DbSession, plan: MealPlan) -> PlanOut:
             .order_by(MealPlanDay.day)
         )
     ).all()
+    eaten = await _eaten_meals(session, plan)
     days = []
     for day_row in day_rows:
         items = []
@@ -64,6 +78,7 @@ async def _serialize(session: DbSession, plan: MealPlan) -> PlanOut:
                     image_url=recipe.image_url if recipe else None,
                     prep_minutes=recipe.prep_minutes if recipe else 0,
                     difficulty=recipe.difficulty if recipe else "easy",
+                    eaten=(day_row.day, item.meal_type, item.recipe_id) in eaten,
                 )
             )
         days.append(
@@ -98,19 +113,106 @@ async def _owned_plan(session: DbSession, plan_id: uuid.UUID, user_id: uuid.UUID
     return plan
 
 
+async def _eaten_meals(
+    session: DbSession, plan: MealPlan
+) -> set[tuple[date, MealType, uuid.UUID]]:
+    """Meals of the plan logged with «Съел», as (day, meal, recipe).
+
+    Matched by recipe rather than by plan item: swapping one dish re-creates the
+    day's items, and the other meals of the day must stay marked.
+    """
+    rows = await session.execute(
+        select(DiaryEntry.day, DiaryEntry.meal_type, DiaryEntry.recipe_id).where(
+            DiaryEntry.user_id == plan.user_id,
+            DiaryEntry.source == "plan",
+            DiaryEntry.recipe_id.is_not(None),
+            DiaryEntry.day >= plan.date_from,
+            DiaryEntry.day <= plan.date_to,
+        )
+    )
+    return {(day, meal, recipe_id) for day, meal, recipe_id in rows.all()}
+
+
+async def _owned_item(
+    session: DbSession, plan_id: uuid.UUID, item_id: uuid.UUID, user_id: uuid.UUID
+) -> tuple[MealPlanItem, MealPlanDay]:
+    plan = await _owned_plan(session, plan_id, user_id)
+    item = await session.get(MealPlanItem, item_id)
+    day_row = await session.get(MealPlanDay, item.day_id) if item is not None else None
+    if item is None or day_row is None or day_row.plan_id != plan.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "item not found")
+    return item, day_row
+
+
+def _same_meal(user_id: uuid.UUID, item: MealPlanItem, day_row: MealPlanDay):
+    return (
+        DiaryEntry.user_id == user_id,
+        DiaryEntry.source == "plan",
+        DiaryEntry.day == day_row.day,
+        DiaryEntry.meal_type == item.meal_type,
+        DiaryEntry.recipe_id == item.recipe_id,
+    )
+
+
+@router.post(
+    "/{plan_id}/items/{item_id}/eaten",
+    response_model=DiaryEntryOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def mark_eaten(
+    plan_id: uuid.UUID, item_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> DiaryEntryOut:
+    """«Съел»: logs the planned portion in the diary with the plan's own numbers.
+
+    Repeating it returns the existing entry instead of logging the meal twice.
+    """
+    item, day_row = await _owned_item(session, plan_id, item_id, user.id)
+    existing = await session.scalar(
+        select(DiaryEntry).where(*_same_meal(user.id, item, day_row)).limit(1)
+    )
+    if existing is not None:
+        return diary_entry_out(existing)
+    recipe = await session.get(Recipe, item.recipe_id)
+    entry = DiaryEntry(
+        user_id=user.id,
+        day=day_row.day,
+        meal_type=item.meal_type,
+        recipe_id=item.recipe_id,
+        name=recipe.name if recipe else "Блюдо из рациона",
+        grams=item.grams,
+        kcal=item.kcal,
+        protein_g=item.protein_g,
+        fat_g=item.fat_g,
+        carbs_g=item.carbs_g,
+        source="plan",
+    )
+    session.add(entry)
+    await session.flush()
+    return diary_entry_out(entry)
+
+
+@router.delete("/{plan_id}/items/{item_id}/eaten", status_code=status.HTTP_204_NO_CONTENT)
+async def unmark_eaten(
+    plan_id: uuid.UUID, item_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> None:
+    """Undo «Съел»: removes the diary entry the button created."""
+    item, day_row = await _owned_item(session, plan_id, item_id, user.id)
+    await session.execute(delete(DiaryEntry).where(*_same_meal(user.id, item, day_row)))
+
+
 @router.post("/generate", response_model=PlanOut, status_code=status.HTTP_201_CREATED)
 async def generate(
     payload: GeneratePlanRequest,
     user: CurrentUser,
     profile: CurrentProfile,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
 ) -> PlanOut:
     targets = await current_targets(session, user.id)
     if targets is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "compute targets first")
 
-    days = min(payload.days, subscription.limits["plan_days"])
+    days = min(payload.days, access.limits["plan_days"])
     plan = await generate_meal_plan(
         session,
         user,
@@ -128,7 +230,7 @@ async def generate(
 async def current_plan(
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
     day: date | None = None,
 ) -> PlanOut:
     requested = day or date.today()
@@ -153,10 +255,10 @@ async def plan_calendar(
     date_to: date,
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
 ) -> list[PlanCalendarDayOut]:
     if (date_to - date_from).days > 62:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "range is limited to 63 days")
+        raise HTTPException(422, "range is limited to 63 days")
     rows = (
         await session.execute(
             select(MealPlanDay, MealPlan.id, MealPlan.created_at)
@@ -191,7 +293,7 @@ async def get_plan(
     plan_id: uuid.UUID,
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
 ) -> PlanOut:
     return await _serialize(session, await _owned_plan(session, plan_id, user.id))
 
@@ -201,7 +303,7 @@ async def get_shopping_list(
     plan_id: uuid.UUID,
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
     day: date | None = None,
 ) -> ShoppingListOut:
     """Aggregated ingredients with an estimated cost.
@@ -227,7 +329,7 @@ async def get_shopping_offers(
     plan_id: uuid.UUID,
     user: CurrentUser,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
     day: date | None = None,
 ) -> ShoppingOffersOut:
     """Return retailer offers through a configured partner adapter.
@@ -241,8 +343,12 @@ async def get_shopping_offers(
     entries = await shopping_list(session, plan, user.region_code, day=day)
     try:
         offers = await get_retail_provider().offers(entries, user.region_code, plan.currency)
-    except RuntimeError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from None
+    except RuntimeError:
+        # The message can name configuration keys; it goes to the log only.
+        logger.exception("retail provider failed")
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "shopping offers are temporarily unavailable"
+        ) from None
     return ShoppingOffersOut(
         plan_id=str(plan.id),
         region_code=user.region_code,
@@ -257,7 +363,7 @@ async def swap_item(
     user: CurrentUser,
     profile: CurrentProfile,
     session: DbSession,
-    subscription: NutritionSubscription,
+    access: ActiveAccess,
 ) -> PlanOut:
     """Replace one meal without touching the rest of the day.
 
@@ -291,7 +397,9 @@ async def swap_item(
     }
     rejected = slug_by_id[item.recipe_id]
 
-    candidates = await load_recipe_candidates(session, user.region_code, day_row.day)
+    candidates = await load_recipe_candidates(
+        session, user.region_code, day_row.day, frozenset(profile.excluded_product_ids or [])
+    )
     day_budget = day_row.cost if plan.budget_total is None else plan.budget_total / max(
         1, len(plan.days)
     )
@@ -305,10 +413,10 @@ async def swap_item(
         budget_per_day=day_budget if plan.budget_total is not None else None,
         meal_slots=slots,
         diet=profile.diet,
-        excluded_allergens=frozenset(profile.allergens or []),
+        excluded_allergens=catalogue_exclusions(profile.allergens),
         excluded_recipe_ids=frozenset({rejected}),
     )
-    new_day = build_day(candidates, request, locked=locked)
+    new_day = await run_in_threadpool(build_day, candidates, request, locked=locked)
     if not new_day.items:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "no replacement dish satisfies the constraints"

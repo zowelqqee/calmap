@@ -1,0 +1,2 @@
+# Certificates from the certs service (docker/certs.sh), not obtained by Caddy.
+tls /certs/certificates/{$DOMAIN}.crt /certs/certificates/{$DOMAIN}.key
