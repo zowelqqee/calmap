@@ -4,6 +4,7 @@ import '../core/api_client.dart';
 import '../core/legal.dart';
 import '../core/subscription.dart';
 import '../core/theme.dart';
+import '../widgets/app_store_plans.dart';
 import 'profile_screen.dart';
 
 /// Shown instead of the app while there is no paid period or trial. The app only
@@ -105,6 +106,8 @@ class _PaywallScreenState extends State<PaywallScreen> {
                     )
                   : const Text('Обновить статус'),
             ),
+            const SizedBox(height: 24),
+            AppStorePlans(api: widget.api),
             const SizedBox(height: 32),
             LegalLinksText(api: widget.api, prefix: 'Документы —'),
           ],

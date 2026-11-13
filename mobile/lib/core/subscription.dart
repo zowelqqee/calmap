@@ -9,6 +9,7 @@ class SubscriptionStatus {
     required this.tier,
     required this.accessUntil,
     required this.message,
+    this.appStoreActive = false,
   });
 
   factory SubscriptionStatus.fromJson(Map<String, dynamic> json) =>
@@ -20,6 +21,7 @@ class SubscriptionStatus {
           json['access_until']?.toString() ?? '',
         )?.toLocal(),
         message: json['message']?.toString(),
+        appStoreActive: json['app_store_active'] == true,
       );
 
   /// trial | active | trial_ended | expired | revoked
@@ -28,6 +30,9 @@ class SubscriptionStatus {
   final String? tier;
   final DateTime? accessUntil;
   final String? message;
+
+  /// The access comes from a running App Store subscription.
+  final bool appStoreActive;
 
   /// Access as of now. A cached answer read offline still ends at
   /// `access_until`, so being offline never extends a subscription.

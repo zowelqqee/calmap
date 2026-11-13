@@ -62,7 +62,8 @@ class AnatomyLayout {
     required bool female,
     required AnatomyView view,
   }) {
-    final model = '${female ? 'female' : 'male'}'
+    final model =
+        '${female ? 'female' : 'male'}'
         '${view == AnatomyView.front ? 'Front' : 'Back'}';
     final key = '${size.width}x${size.height}|$model';
     final cached = _layouts[key];

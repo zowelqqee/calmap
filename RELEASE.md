@@ -186,6 +186,31 @@ HAProxy там принимает 443 и 80 и передаёт их по обр
 (ст. 12 152-ФЗ). Она описана в политике и согласии; уведомление Роскомнадзора о
 трансграничной передаче должно быть подано до включения запасного адреса.
 
+### Подписки App Store (In-App Purchase)
+
+В iOS-приложении подписки BASE и PRO продаются через App Store параллельно с
+ботом; доступ даёт лучшая из действующих подписок аккаунта.
+
+1. App Store Connect → Business: подписан Paid Apps Agreement (банк, налоговая
+   форма), подана заявка в Small Business Program (комиссия 15%).
+2. Calmap → Monetization → Subscriptions: группа «Calmap», подписки на 1 месяц
+   `ru.calmap.app.pro.month` (уровень 1) и `ru.calmap.app.base.month` (уровень 2),
+   цены, русская локализация, скриншот экрана покупки для проверки.
+3. Корневой сертификат Apple на сервере (им проверяется подпись покупок):
+   ```bash
+   cd /opt/calmap/backend
+   curl -fsSL -o docker/apple-certs/AppleRootCA-G3.cer \
+     https://www.apple.com/certificateauthority/AppleRootCA-G3.cer
+   docker compose --profile https up -d --build backend
+   ```
+   Без сертификата покупки отклоняются (503), остальное работает.
+4. Calmap → App Information → App Store Server Notifications: Version 2,
+   Production и Sandbox URL `https://api2.calmap.ru/v1/appstore/notifications`
+   (адрес `api2` доступен Apple из-за рубежа). Кнопка «Request a Test
+   Notification» — в логах backend появится `App Store notification TEST handled`.
+5. Проверка: Users and Access → Sandbox → тестовый покупатель; на iPhone с
+   TestFlight-сборкой — Профиль → «Оформить в App Store».
+
 ### Бэкапы
 
 Сервис `backup` раз в сутки пишет `pg_dump` в `BACKUP_DIR` (по умолчанию

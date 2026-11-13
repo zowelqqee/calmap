@@ -38,11 +38,12 @@ class _WorkoutMuscleSummaryState extends State<WorkoutMuscleSummary> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final female = widget.bodySex == 'female';
-    final ranked = widget.loads.entries.where((entry) => entry.value > 0).toList()
-      ..sort((left, right) {
-        final byValue = right.value.compareTo(left.value);
-        return byValue != 0 ? byValue : left.key.compareTo(right.key);
-      });
+    final ranked =
+        widget.loads.entries.where((entry) => entry.value > 0).toList()
+          ..sort((left, right) {
+            final byValue = right.value.compareTo(left.value);
+            return byValue != 0 ? byValue : left.key.compareTo(right.key);
+          });
     final maximum = ranked.isEmpty ? 1 : ranked.first.value;
     final onMap = ranked.where((entry) => anatomyMuscles.contains(entry.key));
 
@@ -178,9 +179,9 @@ class _AnatomyFigure extends StatelessWidget {
               onTapUp: (details) {
                 final region = layout.regionAt(details.localPosition);
                 final muscle = region?.labelFrom(loads);
-                onSelect(muscle != null && loads.containsKey(muscle)
-                    ? muscle
-                    : null);
+                onSelect(
+                  muscle != null && loads.containsKey(muscle) ? muscle : null,
+                );
               },
               child: CustomPaint(
                 size: size,
@@ -243,10 +244,7 @@ class _AnatomyPainter extends CustomPainter {
     if (bounds.isEmpty) return;
     final value = region.loadFrom(loads);
     if (value <= 0) {
-      canvas.drawPath(
-        region.path,
-        Paint()..color = _restingColor(region.slug),
-      );
+      canvas.drawPath(region.path, Paint()..color = _restingColor(region.slug));
       return;
     }
     final color = _loadColor(value, maximum);

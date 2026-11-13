@@ -24,9 +24,9 @@ EFFECTIVE_DATE = "14.10.2026"
 #: Pages revised after EFFECTIVE_DATE; a consent's date matches its version in
 #: app/services/consent.py.
 REVISED = {
-    "privacy": "09.11.2026",
-    "terms": "25.10.2026",
-    "consent": "09.11.2026",
+    "privacy": "13.11.2026",
+    "terms": "13.11.2026",
+    "consent": "13.11.2026",
     "photo-consent": "15.10.2026",
 }
 PAGES = {

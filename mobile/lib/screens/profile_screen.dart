@@ -6,8 +6,10 @@ import 'package:flutter/services.dart';
 import '../core/api_client.dart';
 import '../core/city_catalog.dart';
 import '../core/legal.dart';
+import '../core/app_store.dart';
 import '../core/subscription.dart';
 import '../core/theme.dart';
+import '../widgets/app_store_plans.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({
@@ -297,6 +299,24 @@ class _ProfileScreenState extends State<ProfileScreen>
     return 'Действует до ${status.untilLabel}';
   }
 
+  Future<void> _openAppStorePlans() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+          child: AppStorePlans(
+            api: widget.api,
+            appStoreActive: subscription?.appStoreActive ?? false,
+          ),
+        ),
+      ),
+    );
+    if (mounted) await _load();
+  }
+
   void _snack(String message) => ScaffoldMessenger.of(
     context,
   ).showSnackBar(SnackBar(content: Text(message)));
@@ -405,6 +425,18 @@ class _ProfileScreenState extends State<ProfileScreen>
                       ),
                       const SizedBox(height: 6),
                       Text(_subscriptionLabel()),
+                      if (AppStoreSubscriptions.shared?.supported ?? false)
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton(
+                            onPressed: _openAppStorePlans,
+                            child: Text(
+                              subscription?.appStoreActive ?? false
+                                  ? 'Подписка App Store'
+                                  : 'Оформить в App Store',
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                 ),

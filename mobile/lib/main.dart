@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/api_client.dart';
+import 'core/app_store.dart';
 import 'core/subscription.dart';
 import 'core/theme.dart';
 import 'screens/auth_screen.dart';
@@ -31,6 +32,8 @@ class CalmapApp extends StatefulWidget {
 class _CalmapAppState extends State<CalmapApp> with WidgetsBindingObserver {
   final ApiClient api = ApiClient();
   final navigatorKey = GlobalKey<NavigatorState>();
+  final messengerKey = GlobalKey<ScaffoldMessengerState>();
+  late final AppStoreSubscriptions appStore = AppStoreSubscriptions(api);
   AppStage stage = AppStage.loading;
   String? startupError;
   SubscriptionStatus? subscription;
@@ -42,6 +45,11 @@ class _CalmapAppState extends State<CalmapApp> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     api.onSessionExpired = () => _goTo(AppStage.auth);
+    AppStoreSubscriptions.shared = appStore;
+    appStore
+      ..onStatus = _applyStatus
+      ..onError = _snack
+      ..onPending = () => _snack('Покупка ожидает подтверждения');
     api.onSubscriptionRequired = () {
       if (stage == AppStage.home || stage == AppStage.onboarding) {
         _refreshSubscription();
@@ -54,6 +62,7 @@ class _CalmapAppState extends State<CalmapApp> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _accessTimer?.cancel();
+    appStore.dispose();
     super.dispose();
   }
 
@@ -71,18 +80,7 @@ class _CalmapAppState extends State<CalmapApp> with WidgetsBindingObserver {
   /// Returns true when the user has access.
   Future<bool> _refreshSubscription() async {
     try {
-      final status = await fetchSubscription(api);
-      if (!mounted) return status.hasAccess;
-      setState(() => subscription = status);
-      _scheduleAccessCheck(status);
-      if (status.hasAccess) {
-        if (stage != AppStage.home && stage != AppStage.onboarding) {
-          _goTo(onboardingCompleted ? AppStage.home : AppStage.onboarding);
-        }
-      } else if (stage != AppStage.paywall) {
-        _goTo(AppStage.paywall);
-      }
-      return status.hasAccess;
+      return _applyStatus(await fetchSubscription(api));
     } on ApiException catch (exception) {
       if (exception.statusCode == 401) return false;
       if (stage == AppStage.loading && mounted) {
@@ -91,6 +89,26 @@ class _CalmapAppState extends State<CalmapApp> with WidgetsBindingObserver {
       return subscription?.hasAccess ?? false;
     }
   }
+
+  /// Shows the app or the paywall for this status; true when the user has access.
+  bool _applyStatus(SubscriptionStatus status) {
+    if (!mounted) return status.hasAccess;
+    final wasBlocked = subscription != null && !subscription!.hasAccess;
+    setState(() => subscription = status);
+    _scheduleAccessCheck(status);
+    if (status.hasAccess) {
+      if (stage != AppStage.home && stage != AppStage.onboarding) {
+        _goTo(onboardingCompleted ? AppStage.home : AppStage.onboarding);
+      }
+      if (wasBlocked) _snack('Доступ открыт. Спасибо!');
+    } else if (stage != AppStage.paywall) {
+      _goTo(AppStage.paywall);
+    }
+    return status.hasAccess;
+  }
+
+  void _snack(String message) =>
+      messengerKey.currentState?.showSnackBar(SnackBar(content: Text(message)));
 
   /// Re-check exactly when the paid period or trial ends, so the paywall appears
   /// even if the app stays open.
@@ -129,6 +147,8 @@ class _CalmapAppState extends State<CalmapApp> with WidgetsBindingObserver {
   }
 
   Future<void> _afterAuthentication() async {
+    // Purchases and renewals StoreKit has not delivered yet go to the server now.
+    appStore.start();
     try {
       final me = await api.get('/v1/auth/me');
       onboardingCompleted = me['onboarding_completed'] == true;
@@ -164,6 +184,7 @@ class _CalmapAppState extends State<CalmapApp> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return MaterialApp(
       navigatorKey: navigatorKey,
+      scaffoldMessengerKey: messengerKey,
       title: 'Calmap',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(),
